@@ -1,0 +1,4 @@
+loguru
+opuslib
+python-dotenv
+requests
