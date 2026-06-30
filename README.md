@@ -27,7 +27,7 @@ On your Mac, download:
    [python.org/downloads/macos](https://www.python.org/downloads/macos/)
 2. VS Code
    [code.visualstudio.com/Download](https://code.visualstudio.com/Download)
-3. BKFIL for macOS
+3. The macOS flashing app `bkfil.app`
    Ask the project owner for `BKFIL_macos_4.0.1.25123002`
 
 ## Step 1: Download this repo
@@ -129,7 +129,7 @@ The file you need is:
 ## Step 8: Flash the chip
 
 1. Plug the chip into your Mac with USB.
-2. Open `bkfil.app`.
+2. Open the macOS app `bkfil.app`.
 3. Hold `BOOT`.
 4. Tap `RST` once.
 5. Release `BOOT`.
