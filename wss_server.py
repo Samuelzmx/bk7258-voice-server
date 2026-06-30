@@ -3,9 +3,9 @@
 
 This server speaks the BK7258 / Agora R1 NOPSRAM protocol directly over
 asyncio TCP sockets. It performs the HTTP upgrade manually, decodes and
-encodes raw WebSocket frames, accepts OPUS microphone audio from the chip,
-and returns OPUS audio responses wrapped in the chip's 16-byte transport
-header.
+encodes raw WebSocket frames, and wraps chip audio in the 16-byte transport
+header. The current working chip path is PCM in and PCM out, while OPUS
+support remains available as an optional fallback for other firmware modes.
 """
 
 from __future__ import annotations
@@ -51,10 +51,16 @@ def _ensure_opus_library() -> None:
 
 _ensure_opus_library()
 
-import opuslib
 import requests
 from dotenv import load_dotenv
 from loguru import logger
+
+try:
+    import opuslib  # type: ignore[import-not-found]
+except Exception:
+    opuslib = None
+
+OPUSLIB_AVAILABLE = opuslib is not None
 
 load_dotenv(Path(__file__).with_name(".env"))
 
@@ -125,8 +131,10 @@ DEEPGRAM_API_KEY = require_env("DEEPGRAM_API_KEY")
 ANTHROPIC_API_KEY = require_env("ANTHROPIC_API_KEY")
 
 
-def make_session_encoder() -> opuslib.Encoder:
+def make_session_encoder() -> Any | None:
     """Build a per-session 24 kHz mono Opus encoder for outbound audio."""
+    if not OPUSLIB_AVAILABLE:
+        return None
     return opuslib.Encoder(OUTBOUND_AUDIO_RATE, 1, opuslib.APPLICATION_VOIP)
 
 
@@ -141,7 +149,7 @@ class Session:
     output_audio_rate: int = OUTBOUND_AUDIO_RATE
     output_audio_duration_ms: int = DEFAULT_OUTBOUND_FRAME_MS
     seq: int = 0
-    encoder: opuslib.Encoder = field(default_factory=make_session_encoder)
+    encoder: Any | None = field(default_factory=make_session_encoder)
     audio_buf: bytearray = field(default_factory=bytearray)
     audio_packets: list[bytes] = field(default_factory=list)
     committed_audio: bytes = b""
@@ -477,9 +485,12 @@ def pcm_to_transport_frames(
 
 
 def pcm_to_opus_frames(
-    pcm_bytes: bytes, encoder: opuslib.Encoder, start_seq: int, frame_ms: int
+    pcm_bytes: bytes, encoder: Any | None, start_seq: int, frame_ms: int
 ) -> tuple[list[bytes], int]:
     """Convert 24 kHz mono PCM into OPUS frames with chip transport headers."""
+    if not OPUSLIB_AVAILABLE or encoder is None:
+        return [], start_seq
+
     frames: list[bytes] = []
     seq = start_seq
     frame_samples = OUTBOUND_AUDIO_RATE * frame_ms // 1000
@@ -644,6 +655,10 @@ def looks_like_raw_pcm(pcm_bytes: bytes, content_type: str) -> bool:
 
 def decode_opus_packets_to_pcm(opus_packets: list[bytes]) -> bytes:
     """Decode packetized 16 kHz mono OPUS into linear16 PCM."""
+    if not OPUSLIB_AVAILABLE:
+        logger.warning("received OPUS audio but opuslib is not installed")
+        return b""
+
     decoder = opuslib.Decoder(INBOUND_AUDIO_RATE, 1)
     pcm = bytearray()
 

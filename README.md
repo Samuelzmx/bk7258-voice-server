@@ -1,489 +1,452 @@
 # bk7258-voice-server
 
-Working BK7258 / Agora R1 voice server that replaces the original Agora or TEN cloud path with a local Python WebSocket server.
+This guide is written for someone who is **not** a programmer.
 
-This repo is the server side that we actually verified with the chip:
+Goal:
 
-- chip connects over Wi-Fi to `ws://<your-mac-ip>:8765`
-- chip sends microphone audio to the server
-- server runs `Deepgram STT -> Claude haiku-4-5 -> Deepgram TTS`
-- chip speaks the reply back
+1. start the server on a MacBook
+2. build firmware with **your own** Mac IP and **your own** Wi-Fi
+3. flash the chip
+4. hear the chip say something
+5. talk to the chip and hear it answer back
 
-This final working version does **not** use Pipecat in the live runtime. We kept a custom transport layer because the BK7258 chip needs a custom WebSocket handshake, a custom 16-byte audio header, chip-specific framing, and server-side handling for the chip's commit behavior.
-
-## What Matches The Feishu Workshop
-
-The setup flow is intentionally close to the Feishu `R1+TEN document [eng ver]`:
-
-1. set up the BK SDK
-2. install the toolchain
-3. configure Wi-Fi
-4. compile and flash firmware
-5. configure the server address
-
-The difference is the backend:
-
-- the Feishu workshop points the hardware at a TEN / Agora workflow
-- this repo points the hardware at `wss_server.py`
-- the final voice path here is `Deepgram -> Claude -> Deepgram`, not TEN and not Agora
-
-## Final Architecture
+This is the working voice path:
 
 ```text
-BK7258 mic
-  -> BK7258 firmware
-  -> Wi-Fi
-  -> raw WebSocket
-  -> wss_server.py
-  -> Deepgram STT
-  -> Claude haiku-4-5
-  -> Deepgram TTS
-  -> raw WebSocket
-  -> BK7258 speaker
+Chip mic -> Wi-Fi -> this server -> Deepgram STT -> Claude haiku-4-5 -> Deepgram TTS -> chip speaker
 ```
 
-## Repo Contents
+We are **not** using Agora in the final runtime.
+We are **not** using Pipecat in the final runtime.
 
-- `wss_server.py`: the production server
-- `start_server.sh`: simple launcher
-- `requirements.txt`: Python packages
-- `.env.example`: required API keys
-- `WORKFLOW_STATUS.md`: working-state notes
-- `scripts/prepare_bk_aidk.py`: helper that patches the Beken SDK for your own Mac IP and optional fallback Wi-Fi
+## What You Need
 
-## Before You Start
+- 1 MacBook
+- 1 BK7258 / Agora R1 board
+- 1 USB cable
+- 1 Wi-Fi network
+- 1 iPhone or Android phone for the BekenIoT app
+- 1 GitHub account with access to this repo
 
-You need:
+## What To Download
 
-- a BK7258 / Agora R1 board
-- a USB cable for flashing and power
-- a MacBook on the same Wi-Fi network as the chip
-- a 2.4 GHz Wi-Fi network
-- a phone for BLE Wi-Fi provisioning if you use the stock Beken App path
-- a Deepgram API key
-- an Anthropic API key
+Download these first.
 
-Recommended Mac software:
+### On your Mac
 
-- Homebrew
-- Python 3.11 or newer
-- `ffmpeg`
-- `opus`
-- Git
-- Docker Desktop
-- BKFIL for macOS, or the Beken UART flash tool from the workshop / vendor package
+1. Python 3.13:
+   [python.org/downloads/macos](https://www.python.org/downloads/macos/)
+2. VS Code:
+   [code.visualstudio.com/Download](https://code.visualstudio.com/Download)
+3. GitHub Desktop:
+   [desktop.github.com/download](https://desktop.github.com/download/)
+4. This repo:
+   [github.com/Samuelzmx/bk7258-voice-server](https://github.com/Samuelzmx/bk7258-voice-server)
 
-Useful upstream links:
+### On your phone
 
-- Beken SDK source: [github.com/bekencorp/bk_aidk](https://github.com/bekencorp/bk_aidk)
-- Beken SDK docs: [docs.bekencorp.com Armino AIDK](https://docs.bekencorp.com/arminodoc/bk_aidk/bk7258/en/v2.0.1/projects/beken_genie/index.html)
-- Beken App download page used by the workshop flow: [docs.riselink.ai app download](https://docs.riselink.ai/arminodoc/bk_app/app/zh_CN/v2.0.1/app_download/index.html)
-- BK7258 burn-code docs: [docs.riselink.ai burn code](https://docs.riselink.ai/arminodoc/bk_ai_smp/bk7258/en/v3.1.1/get-started/index.html)
+1. iPhone BekenIoT app:
+   [apps.apple.com search result for BekenIoT](https://apps.apple.com/us/search?term=BekenIoT)
+2. Android BekenIoT app:
+   [dl.bekencorp.com/apk/BekenIot.apk](https://dl.bekencorp.com/apk/BekenIot.apk)
+3. BekenIoT app download page from vendor docs:
+   [docs.riselink.ai BekenIoT app download](https://docs.riselink.ai/arminodoc/bk_app/app/zh_CN/v2.0.1/app_download/index.html)
 
-## Step-By-Step: From Raw Chip To Talking Device
+### Flash tool on your Mac
 
-### 1. Clone This Repo
+Use **BKFIL for macOS**.
 
-```bash
-git clone git@github.com:Samuelzmx/bk7258-voice-server.git
-cd bk7258-voice-server
-```
+If your team already has the tool package:
 
-### 2. Prepare The Python Server
+- open the folder named `BKFIL_macos_4.0.1.25123002`
+- double-click `bkfil.app`
 
-Install native packages:
+If you do not have BKFIL yet:
 
-```bash
-brew install ffmpeg opus
-```
+- ask your workshop organizer, teammate, or Beken contact for the macOS BKFIL package
+- the exact app name we used was `BKFIL_macos_4.0.1.25123002`
 
-Create a virtualenv and install dependencies:
+## Part 1: Download This Repo To Your Mac
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+If you do not use Git often, use GitHub Desktop.
 
-Create your environment file:
+1. Open GitHub Desktop.
+2. Click `File`.
+3. Click `Clone repository`.
+4. Choose this repo.
+5. Pick a folder on your Mac.
+6. Click `Clone`.
 
-```bash
-cp .env.example .env
-```
+If you prefer download-as-ZIP:
 
-Fill in:
+1. Open the GitHub repo page.
+2. Click the green `Code` button.
+3. Click `Download ZIP`.
+4. Unzip it.
 
-- `DEEPGRAM_API_KEY`
-- `ANTHROPIC_API_KEY`
+## Part 2: Set Up The Server On Your Mac
 
-Exact `.env` format:
+### 2.1 Open the repo folder
+
+1. Open the repo folder.
+2. Double-click `setup_server.command`.
+
+What this does:
+
+- creates a Python environment
+- installs the server packages
+
+If macOS blocks the file:
+
+1. right-click `setup_server.command`
+2. click `Open`
+3. click `Open` again
+
+### 2.2 Put in your API keys
+
+1. In the repo folder, copy `.env.example`
+2. Rename the copy to `.env`
+3. Open `.env` in VS Code
+4. Paste your keys like this:
 
 ```env
 DEEPGRAM_API_KEY=your_deepgram_api_key_here
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
-If your team is reusing one shared set of keys, keep that in a private `.env`
-file outside Git history and copy it onto each engineer's machine.
+Save the file.
 
-Do not commit `.env`.
+### 2.3 Find your Mac IP address
 
-### 3. Find Your Mac's LAN IP
+You will need this for the chip firmware.
 
-The chip must connect to the IP of the Mac that is running `wss_server.py`.
+On macOS:
 
-Common commands:
+1. Click the Apple menu.
+2. Click `System Settings`.
+3. Click `Wi-Fi`.
+4. Click `Details` next to the Wi-Fi you are using.
+5. Click `TCP/IP`.
+6. Find `IPv4 Address`.
+
+Example:
+
+- `192.168.1.23`
+
+Write this down.
+
+### 2.4 Find your Wi-Fi name
+
+You will also need your Wi-Fi name.
+
+On macOS:
+
+1. Click the Wi-Fi icon at the top right of the screen.
+2. Look at the Wi-Fi name with the check mark.
+
+Example:
+
+- `MyHomeWiFi`
+
+### 2.5 Start the server
+
+1. Double-click `start_server.command`
+
+If macOS blocks it:
+
+1. right-click `start_server.command`
+2. click `Open`
+3. click `Open` again
+
+Leave this window open.
+
+## Part 3: Build Firmware The Easy Way
+
+This is the easiest path.
+
+You do **not** need local Docker.
+You do **not** need a local compiler.
+
+The GitHub repo has a button-driven firmware builder.
+
+### 3.1 Open the repo on GitHub
+
+1. Open the GitHub page for this repo.
+2. Click the `Actions` tab.
+3. In the left menu, click `Build BK7258 Firmware`.
+4. Click the `Run workflow` button.
+
+### 3.2 Fill in the form
+
+Type these values:
+
+- `server_ip`
+  Put the Mac IP you found in Part 2.3
+  Example: `192.168.1.23`
+- `wifi_ssid`
+  Put your Wi-Fi name
+  Example: `MyHomeWiFi`
+- `wifi_password`
+  Put your Wi-Fi password
+- `disable_countdown`
+  Leave this as `true`
+
+Then:
+
+1. Click the green `Run workflow` button.
+
+### 3.3 Wait for the firmware file
+
+1. Wait until the workflow shows a green check mark.
+2. Click the workflow run.
+3. Scroll to `Artifacts`.
+4. Download the artifact named `bk7258-firmware`.
+5. Unzip it.
+
+Inside you will see:
+
+- `all-app.bin`
+- `all-app.bin.sha256`
+- `README.txt`
+
+The file you will flash is:
+
+- `all-app.bin`
+
+## Part 4: Flash The Chip
+
+### 4.1 Connect the board
+
+1. Plug the BK7258 board into your Mac with USB.
+
+### 4.2 Open BKFIL
+
+1. Open `bkfil.app`
+
+### 4.3 Put the chip into download mode
+
+1. Hold the `BOOT` button on the board.
+2. While still holding `BOOT`, tap the `RST` button once.
+3. Release `BOOT`.
+
+### 4.4 Set BKFIL exactly like this
+
+In BKFIL:
+
+1. Choose the serial port
+   Example: `/dev/cu.usbserial-310`
+2. Add the file `all-app.bin`
+3. Set start address to `0x0`
+4. Set link type to `BOOTROM`
+5. Set baud rate to `1500000`
+6. Turn `Erase before download` ON
+7. Turn `Reboot after download` ON
+
+### 4.5 Start flashing
+
+1. Click the `Download` button
+
+If BKFIL says `Please reset the chip`:
+
+1. Hold `BOOT`
+2. Tap `RST`
+3. Release `BOOT`
+
+Wait for success.
+
+Expected success message:
+
+- `Download complete, all pass.`
+
+## Part 5: Put The Chip On Your Wi-Fi
+
+The firmware build step already put your Wi-Fi into the firmware as a fallback.
+
+That means in many cases the chip can connect by itself.
+
+If it does **not** connect by itself, use the BekenIoT app.
+
+### 5.1 Install the BekenIoT app
+
+Use one of these:
+
+- iPhone:
+  [apps.apple.com search result for BekenIoT](https://apps.apple.com/us/search?term=BekenIoT)
+- Android:
+  [dl.bekencorp.com/apk/BekenIot.apk](https://dl.bekencorp.com/apk/BekenIot.apk)
+
+### 5.2 Enter Wi-Fi setup mode on the chip
+
+On the stock R1 board:
+
+1. Long-press `Key 2` for about 3 seconds
+
+If your board labels are different, use the board button that the workshop sheet uses for pairing / network setup.
+
+### 5.3 Use the app
+
+In the phone app:
+
+1. Open BekenIoT
+2. Tap `Add device`
+3. Let the app scan
+4. Tap the device it finds
+5. Choose the model if asked
+6. Choose your Wi-Fi
+7. Enter your Wi-Fi password
+8. Tap the final confirm / add button
+
+## Part 6: First Test
+
+When the chip connects correctly:
+
+1. your Mac server window should show a new connection
+2. the chip should connect to `ws://<your-mac-ip>:8765`
+3. the server should answer the handshake
+4. the chip should play a greeting sentence
+
+### 6.1 Send a manual speech test
+
+If you want to force the chip to speak:
+
+1. Open `Terminal`
+2. Go into the repo folder
+3. Run this exact command:
 
 ```bash
-ipconfig getifaddr en0
-ipconfig getifaddr en1
-```
-
-Pick the interface that is actually on the same Wi-Fi network as the chip.
-
-### 4. Start The Server
-
-```bash
-./start_server.sh
-```
-
-Or:
-
-```bash
-./.venv/bin/python3 ./wss_server.py
-```
-
-What the server exposes:
-
-- chip websocket listener: `0.0.0.0:8765`
-- local admin speak endpoint: `http://127.0.0.1:8766/speak?text=...`
-
-Leave this running before you power the chip for testing.
-
-### 5. Download The BK Firmware SDK
-
-The working firmware target we used is:
-
-- branch: `ai_release/v2.0.1`
-- project: `beken_wss_nopsram`
-
-Clone it:
-
-```bash
-mkdir -p ~/armino
-cd ~/armino
-git clone --recurse-submodules https://github.com/bekencorp/bk_aidk.git -b ai_release/v2.0.1
-```
-
-Note on the Feishu doc:
-
-- the workshop page references `ai_server/v2.0.1`
-- our verified local working setup was built from `ai_release/v2.0.1`
-
-### 6. Patch The Firmware For Your Server
-
-The firmware has to know where your server is.
-
-Recommended command:
-
-```bash
-python3 ./scripts/prepare_bk_aidk.py \
-  --sdk ~/armino/bk_aidk \
-  --server-ip 192.168.1.23 \
-  --disable-countdown
-```
-
-Replace `192.168.1.23` with your Mac's LAN IP.
-
-What this does:
-
-- updates the WebSocket URI inside the BK SDK to `ws://<your-mac-ip>:8765`
-- optionally disables the stock 3-minute countdown sleep
-
-Optional: also set a development fallback Wi-Fi directly in the firmware:
-
-```bash
-python3 ./scripts/prepare_bk_aidk.py \
-  --sdk ~/armino/bk_aidk \
-  --server-ip 192.168.1.23 \
-  --wifi-ssid "Your2GNetwork" \
-  --wifi-password "YourPassword" \
-  --disable-countdown
-```
-
-Use the `--wifi-ssid/--wifi-password` option only if you want a baked-in fallback.
-
-If you skip those options, the firmware can still use the Beken App provisioning flow.
-
-### 7. Build The Firmware
-
-The safest build path is Docker with GCC 10, because the BK SDK bundles precompiled libraries that matched GCC 10 in our testing.
-
-We verified the Docker image:
-
-- `bekencorp/armino-idk:1.2`
-
-Build with:
-
-```bash
-docker run --rm -it \
-  -v ~/armino/bk_aidk:/armino/bk_aidk \
-  -w /armino/bk_aidk \
-  bekencorp/armino-idk:1.2 \
-  bash -lc 'export PATH=/opt/gcc-arm-none-eabi-10.3-2021.10/bin:$PATH && export TOOLCHAIN_DIR=/opt/gcc-arm-none-eabi-10.3-2021.10/bin && make bk7258 PROJECT=beken_wss_nopsram'
-```
-
-The file to flash is:
-
-```text
-~/armino/bk_aidk/build/beken_wss_nopsram/bk7258/all-app.bin
-```
-
-That is the main answer to "which file do I flash?"
-
-### 8. Install / Open The Flash Tool
-
-In our working tests on macOS, we used **BKFIL**.
-
-What to use:
-
-- if your workshop bundle or internal package includes BKFIL for macOS, use that
-- otherwise use the BK7258 UART flash tool referenced in the Beken burn-code documentation
-
-Important note:
-
-- Beken's public docs are clearer for the general UART flashing flow than for the exact macOS BKFIL distribution
-- if you do not already have BKFIL, the fastest path is usually the workshop package or your Beken contact / FAE
-
-### 9. Flash The Chip
-
-The working BKFIL settings we used were:
-
-- image: `all-app.bin`
-- start address: `0x0`
-- link type: `BOOTROM`
-- reboot after download: enabled
-- erase before download: enabled
-- baud rate: `1500000`
-
-Expected file path:
-
-```text
-~/armino/bk_aidk/build/beken_wss_nopsram/bk7258/all-app.bin
-```
-
-Typical board procedure:
-
-1. connect the board over USB
-2. put it into download mode
-3. in BKFIL, choose the serial port like `/dev/cu.usbserial-*`
-4. select `all-app.bin`
-5. click download
-
-The usual manual reset sequence is:
-
-1. hold `BOOT`
-2. tap `RST`
-3. release `BOOT`
-
-If the flash tool says "Please reset the chip", repeat that sequence.
-
-### 10. Provision Wi-Fi
-
-You have two choices.
-
-Choice A, recommended for other engineers:
-
-- use the Beken App BLE provisioning flow
-- this is closest to the workshop / Feishu setup
-
-Choice B, development fallback:
-
-- bake a fallback SSID/password with `scripts/prepare_bk_aidk.py`
-
-For the Beken App path, the vendor docs show this flow:
-
-1. open the Beken App on your phone
-2. put the device into provisioning mode
-3. scan / select the device
-4. choose the device model
-5. choose the local Wi-Fi network
-6. send credentials to the chip
-
-Vendor doc note:
-
-- the stock R1 kit documentation says to long-press `Key 2` for 3 seconds to enter provisioning mode
-- if your board revision labels the buttons differently, follow the workshop sheet or board silkscreen
-
-### 11. Power On And Check The Connection
-
-If everything is correct:
-
-1. the chip joins Wi-Fi
-2. the chip opens a websocket to your Mac on port `8765`
-3. the server logs a new chip session
-4. the server replies to `hello` and `session.update`
-5. the chip should play the greeting audio
-
-The startup greeting is enabled by default in `wss_server.py`.
-
-### 12. Send A Manual Speech Test
-
-Once the chip is connected, you can force speech from the server side:
-
-```bash
-curl -G --data-urlencode "text=Hello this is a server side test" \
-  http://127.0.0.1:8766/speak
+curl -G --data-urlencode "text=Hello this is a test from the server" http://127.0.0.1:8766/speak
 ```
 
 Expected result:
 
-- the chip speaks the sentence clearly
+- the chip says the sentence out loud
 
-If you only hear `dedede` or noise, the audio path is wrong.
+### 6.2 Talk to the chip
 
-### 13. Talk To The Chip
+Once connected:
 
-Once connected, the device is hands-free.
+1. Speak to the chip normally
+2. Wait a moment
+3. The chip should answer back
 
-There is no separate talk button required in the final working path.
+There is no extra talk button needed in the final working setup.
 
-Expected live workflow:
+## If You Want To Edit The Firmware Manually
 
-1. you speak to the chip
-2. chip sends microphone PCM audio to the server
-3. server commits the utterance
-4. server runs `Deepgram STT -> Claude -> Deepgram TTS`
-5. chip speaks the answer
+If you do not want to use the GitHub Actions builder, these are the exact places where the IP and Wi-Fi go.
 
-## What The Working Server Is Actually Doing
+### File 1: server IP
 
-The important runtime behavior in `wss_server.py` is:
+Open this file in the BK SDK:
 
-- manual websocket upgrade and frame handling
-- chip handshake:
-  - `hello -> hello_response`
-  - `session.update -> session.updated`
-- custom 16-byte transport header on binary audio
-- PCM input from the chip at 16 kHz
-- PCM output back to the chip at 16 kHz
-- server-side VAD fallback when the chip does not commit cleanly
-- Deepgram REST calls for STT and TTS
-- Anthropic messages API call for Claude
-- local `/speak` endpoint for forced output testing
+`projects/common_components/network_transfer/bk_wss/bk_wss_main.c`
 
-## Program Structure
+Find this line:
 
-High-level structure inside `wss_server.py`:
+```c
+websocket_cfg.uri = "ws://10.0.0.62:8765";
+```
 
-1. transport layer
-   - websocket handshake
-   - websocket frame encode/decode
-   - BK audio header pack/unpack
-2. session state
-   - one `Session` object per chip connection
-   - per-session sequencing and audio buffers
-3. inbound audio handling
-   - receive chip frames
-   - strip 16-byte header
-   - accumulate PCM
-   - auto-commit by VAD if needed
-4. AI pipeline
-   - Deepgram STT
-   - Claude haiku-4-5
-   - Deepgram TTS
-5. outbound audio handling
-   - resample if needed
-   - frame audio
-   - send back to chip
-6. debug / operations
-   - startup greeting
-   - local admin speak endpoint
-   - detailed logs
+Replace it with your own Mac IP.
 
-## Troubleshooting
+Example:
 
-### Problem: chip connects to Wi-Fi but says nothing
+```c
+websocket_cfg.uri = "ws://192.168.1.23:8765";
+```
 
-Check:
+### File 2: Wi-Fi name and password
 
-- server is running on port `8765`
-- firmware server IP matches your real Mac LAN IP
-- Mac firewall is not blocking incoming connections
-- chip and Mac are on the same LAN
+Open this file in the BK SDK:
+
+`projects/common_components/bk_smart_config/src/core/bk_smart_config_core.c`
+
+Find these two lines:
+
+```c
+#define WSS_DEV_WIFI_SSID             "225"
+#define WSS_DEV_WIFI_PASSWORD         "aaa654321"
+```
+
+Replace them with your own Wi-Fi.
+
+Example:
+
+```c
+#define WSS_DEV_WIFI_SSID             "MyHomeWiFi"
+#define WSS_DEV_WIFI_PASSWORD         "MyPassword123"
+```
+
+### Faster way: use the helper script
+
+If you are okay with one command, this repo already includes a helper that edits those files for you:
+
+```bash
+python3 ./scripts/prepare_bk_aidk.py --sdk ~/armino/bk_aidk --server-ip 192.168.1.23 --wifi-ssid "MyHomeWiFi" --wifi-password "MyPassword123" --disable-countdown
+```
+
+## What This Server Actually Uses
+
+The final working server is:
+
+- WebSocket transport written in Python
+- Deepgram STT
+- Claude `claude-haiku-4-5`
+- Deepgram TTS
+
+Important:
+
+- the chip currently works with **PCM** audio in the final path
+- the server no longer requires Homebrew `opus` just to start
+- `wss_server.py` is still the main file
+
+## Trouble Checklist
+
+### Problem: chip does not speak at all
+
+Check these first:
+
+1. Is `start_server.command` still running?
+2. Is the Mac and chip on the same Wi-Fi?
+3. Did you put the correct `server_ip` in the GitHub firmware build?
+4. Did BKFIL finish with `Download complete, all pass.`?
 
 ### Problem: chip keeps reconnecting
 
-Most common causes:
+This usually means one of these is wrong:
 
-- wrong server IP in firmware
-- Mac changed IP after sleeping or changing Wi-Fi
-- Wi-Fi credentials are wrong
-- chip is failing provisioning and looping
+1. wrong Mac IP in firmware
+2. wrong Wi-Fi name
+3. wrong Wi-Fi password
+4. Mac changed networks
 
 ### Problem: chip shuts down after a few minutes
 
-This is usually firmware-side countdown sleep, not the Python server.
+The firmware build flow in this repo already sets `disable_countdown=true` by default.
 
-The stock `beken_wss_nopsram` project enables a countdown that can deep-sleep the board after a standby timeout.
+Keep it that way.
 
-Recommended fix:
+### Problem: I want the exact file to flash
 
-```bash
-python3 ./scripts/prepare_bk_aidk.py \
-  --sdk ~/armino/bk_aidk \
-  --server-ip 192.168.1.23 \
-  --disable-countdown
-```
+The exact file is:
 
-Then rebuild and reflash.
+- `all-app.bin`
 
-### Problem: chip speaks noise like `dedede`
+If you built firmware locally from the BK SDK, the path is:
 
-That usually means the audio format is wrong.
+- `build/beken_wss_nopsram/bk7258/all-app.bin`
 
-The final working server uses:
+## One-Line Summary
 
-- PCM input from chip
-- PCM output to chip
-- 16-byte BK transport header on each outbound frame
+If you want the shortest possible version:
 
-### Problem: BKFIL is missing
-
-That is a real setup friction point.
-
-What we know:
-
-- the workshop flow assumes a flashing tool is available
-- our successful macOS flashing used BKFIL
-- Beken's public docs are easier to find than the exact macOS BKFIL package
-
-Practical next step:
-
-- use the workshop package if you have it
-- otherwise request the macOS tool from the vendor / field app engineer
-
-## Current Working Test Result
-
-This repo has already been validated with the chip for:
-
-- chip hears greeting audio
-- server can manually make the chip speak
-- user speech reaches the server
-- server runs STT -> LLM -> TTS
-- chip speaks the response back
-
-## Manual Server Test Commands
-
-Syntax check:
-
-```bash
-python3 -c "import ast; ast.parse(open('wss_server.py').read()); print('syntax ok')"
-```
-
-Force speech:
-
-```bash
-curl -G --data-urlencode "text=Tell me a short story" \
-  http://127.0.0.1:8766/speak
-```
+1. Download this repo
+2. Double-click `setup_server.command`
+3. Create `.env`
+4. Double-click `start_server.command`
+5. On GitHub, run `Build BK7258 Firmware`
+6. Type your Mac IP and Wi-Fi into the workflow form
+7. Download `all-app.bin`
+8. Flash it in BKFIL
+9. Power on the chip
+10. Talk to it

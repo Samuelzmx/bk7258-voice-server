@@ -1,0 +1,91 @@
+name: Build BK7258 Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_ip:
+        description: "Mac IPv4 address running wss_server.py, for example 192.168.1.23"
+        required: true
+        type: string
+      wifi_ssid:
+        description: "Optional fallback Wi-Fi name to bake into the firmware"
+        required: false
+        type: string
+      wifi_password:
+        description: "Optional fallback Wi-Fi password to bake into the firmware"
+        required: false
+        type: string
+      disable_countdown:
+        description: "Disable the stock auto-sleep countdown"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: bekencorp/armino-idk:1.2
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Clone BK AIDK
+        run: |
+          git clone --recurse-submodules --branch ai_release/v2.0.1 \
+            https://github.com/bekencorp/bk_aidk.git /tmp/bk_aidk
+
+      - name: Patch BK AIDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          CMD=(python3 "$GITHUB_WORKSPACE/scripts/prepare_bk_aidk.py" \
+            --sdk /tmp/bk_aidk \
+            --server-ip "${{ github.event.inputs.server_ip }}")
+
+          if [ -n "${{ github.event.inputs.wifi_ssid }}" ] || [ -n "${{ github.event.inputs.wifi_password }}" ]; then
+            CMD+=(--wifi-ssid "${{ github.event.inputs.wifi_ssid }}")
+            CMD+=(--wifi-password "${{ github.event.inputs.wifi_password }}")
+          fi
+
+          if [ "${{ github.event.inputs.disable_countdown }}" = "true" ]; then
+            CMD+=(--disable-countdown)
+          fi
+
+          "${CMD[@]}"
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH=/opt/gcc-arm-none-eabi-10.3-2021.10/bin:$PATH
+          export TOOLCHAIN_DIR=/opt/gcc-arm-none-eabi-10.3-2021.10/bin
+          cd /tmp/bk_aidk
+          make bk7258 PROJECT=beken_wss_nopsram
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/output
+          cp /tmp/bk_aidk/build/beken_wss_nopsram/bk7258/all-app.bin /tmp/output/all-app.bin
+          sha256sum /tmp/output/all-app.bin > /tmp/output/all-app.bin.sha256
+          cat > /tmp/output/README.txt <<EOF
+          Flash file: all-app.bin
+          Start address: 0x0
+          Link type: BOOTROM
+          Baud rate: 1500000
+          Reboot after download: ON
+          Erase before download: ON
+
+          Server IP baked into firmware: ${{ github.event.inputs.server_ip }}
+          Fallback Wi-Fi SSID baked into firmware: ${{ github.event.inputs.wifi_ssid }}
+          Auto-sleep countdown disabled: ${{ github.event.inputs.disable_countdown }}
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bk7258-firmware
+          path: /tmp/output
+          retention-days: 7
