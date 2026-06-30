@@ -28,7 +28,7 @@ On your Mac, download:
 2. VS Code
    [code.visualstudio.com/Download](https://code.visualstudio.com/Download)
 3. BKFIL for macOS
-   We used `BKFIL_macos_4.0.1.25123002`
+   Ask the project owner for `BKFIL_macos_4.0.1.25123002`
 
 ## Step 1: Download this repo
 
@@ -71,6 +71,7 @@ For testers:
 
 - keep the GitHub repo version generic
 - get the real API keys directly from the project owner
+- get the BKFIL package directly from the project owner
 
 ## Step 4: Find your Mac IP address
 
