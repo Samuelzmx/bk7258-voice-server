@@ -27,8 +27,11 @@ On your Mac, download:
    [python.org/downloads/macos](https://www.python.org/downloads/macos/)
 2. VS Code
    [code.visualstudio.com/Download](https://code.visualstudio.com/Download)
-3. The macOS flashing app `bkfil.app`
-   Ask the project owner for `BKFIL_macos_4.0.1.25123002`
+3. The Beken flashing tool `BKFIL`
+   - First open [https://dl.bekencorp.com/tools/flash](https://dl.bekencorp.com/tools/flash)
+   - If you are on Windows, the Feishu guide uses `BEKEN_BKFIL_V2.1.11.15_20241114`
+   - If you are on Mac, use the macOS package that contains `bkfil.app`
+   - If the website does not show a Mac package, ask the project owner for `BKFIL_macos_4.0.1.25123002`
 
 ## Step 1: Download this repo
 
@@ -129,11 +132,15 @@ The file you need is:
 ## Step 8: Flash the chip
 
 1. Plug the chip into your Mac with USB.
-2. Open the macOS app `bkfil.app`.
-3. Hold `BOOT`.
-4. Tap `RST` once.
-5. Release `BOOT`.
-6. In BKFIL:
+2. If you have not downloaded BKFIL yet:
+   - open [https://dl.bekencorp.com/tools/flash](https://dl.bekencorp.com/tools/flash)
+   - on Mac, use the package that contains `bkfil.app`
+   - if no Mac package is shown there, get `BKFIL_macos_4.0.1.25123002` from the project owner
+3. Open the macOS app `bkfil.app`.
+4. Hold `BOOT`.
+5. Tap `RST` once.
+6. Release `BOOT`.
+7. In BKFIL:
    - choose the serial port
    - add `all-app.bin`
    - set start address to `0x0`
@@ -141,7 +148,7 @@ The file you need is:
    - set baud rate to `1500000`
    - turn `Erase before download` ON
    - turn `Reboot after download` ON
-7. Click `Download`.
+8. Click `Download`.
 
 Expected success message:
 
