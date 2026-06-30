@@ -28,10 +28,10 @@ On your Mac, download:
 2. VS Code
    [code.visualstudio.com/Download](https://code.visualstudio.com/Download)
 3. The Beken flashing tool `BKFIL`
-   - First open [https://dl.bekencorp.com/tools/flash](https://dl.bekencorp.com/tools/flash)
-   - If you are on Windows, the Feishu guide uses `BEKEN_BKFIL_V2.1.11.15_20241114`
-   - If you are on Mac, use the macOS package that contains `bkfil.app`
-   - If the website does not show a Mac package, ask the project owner for `BKFIL_macos_4.0.1.25123002`
+   - Feishu guide download step for Windows:
+     open [https://dl.bekencorp.com/tools/flash](https://dl.bekencorp.com/tools/flash), download `BEKEN_BKFIL_V2.1.11.15_20241114`, unzip it, and open `BKFIL`
+   - For this Mac setup:
+     get `BKFIL_macos_4.0.1.25123002` from the project owner, unzip it, and open `bkfil.app`
 
 ## Step 1: Download this repo
 
@@ -132,11 +132,15 @@ The file you need is:
 ## Step 8: Flash the chip
 
 1. Plug the chip into your Mac with USB.
-2. If you have not downloaded BKFIL yet:
+2. If you are on Windows and want the same BKFIL download step shown in Feishu:
    - open [https://dl.bekencorp.com/tools/flash](https://dl.bekencorp.com/tools/flash)
-   - on Mac, use the package that contains `bkfil.app`
-   - if no Mac package is shown there, get `BKFIL_macos_4.0.1.25123002` from the project owner
-3. Open the macOS app `bkfil.app`.
+   - download `BEKEN_BKFIL_V2.1.11.15_20241114`
+   - unzip it
+   - open `BKFIL`
+3. If you are on Mac:
+   - get `BKFIL_macos_4.0.1.25123002` from the project owner
+   - unzip it
+   - open `bkfil.app`
 4. Hold `BOOT`.
 5. Tap `RST` once.
 6. Release `BOOT`.
