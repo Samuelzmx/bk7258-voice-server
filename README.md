@@ -25,24 +25,26 @@ On your Mac, download:
 
 1. Python 3.13
    [python.org/downloads/macos](https://www.python.org/downloads/macos/)
-2. GitHub Desktop
-   [desktop.github.com/download](https://desktop.github.com/download/)
-3. VS Code
+2. VS Code
    [code.visualstudio.com/Download](https://code.visualstudio.com/Download)
-4. BKFIL for macOS
+3. BKFIL for macOS
    We used `BKFIL_macos_4.0.1.25123002`
 
 ## Step 1: Download this repo
 
-1. Open GitHub Desktop.
-2. Click `File`.
-3. Click `Clone repository`.
-4. Choose this repo.
-5. Click `Clone`.
+1. Open the repo website on GitHub.
+2. Click the green `Code` button.
+3. Copy the repo URL.
+4. Open VS Code.
+5. Press `Command + Shift + P`.
+6. Type `Git: Clone`.
+7. Paste the repo URL.
+8. Choose a folder on your Mac.
+9. Click `Open` when VS Code asks to open the cloned repo.
 
 ## Step 2: Set up the server
 
-1. Open the repo folder.
+1. Open the repo folder in Finder.
 2. Double-click `setup_server.command`.
 
 If macOS blocks it:
