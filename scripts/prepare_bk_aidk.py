@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -24,6 +25,26 @@ def replace_once(path: Path, pattern: str, repl: str, *, description: str) -> No
 
 def c_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def apply_overlay(sdk_root: Path, overlay_root: Path) -> None:
+    if not overlay_root.exists():
+        raise RuntimeError(f"Required firmware overlay directory is missing: {overlay_root}")
+
+    copied = 0
+    for source_path in overlay_root.rglob("*"):
+        if not source_path.is_file():
+            continue
+        relative_path = source_path.relative_to(overlay_root)
+        destination_path = sdk_root / relative_path
+        if not destination_path.exists():
+            raise RuntimeError(f"Overlay target does not exist in SDK: {destination_path}")
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, destination_path)
+        copied += 1
+
+    if copied == 0:
+        raise RuntimeError(f"Firmware overlay directory was empty: {overlay_root}")
 
 
 def main() -> int:
@@ -67,6 +88,9 @@ def main() -> int:
     sdk_root = Path(args.sdk).expanduser().resolve()
     if not sdk_root.exists():
         parser.error(f"SDK path does not exist: {sdk_root}")
+
+    overlay_root = Path(__file__).resolve().parents[1] / "firmware" / "overlay"
+    apply_overlay(sdk_root, overlay_root)
 
     ws_file = (
         sdk_root
@@ -116,6 +140,7 @@ def main() -> int:
 
     print("Patched BK AIDK successfully.")
     print(f"- SDK: {sdk_root}")
+    print(f"- Applied overlay: {overlay_root}")
     print(f"- Server URI: ws://{args.server_ip}:{args.port}")
     if args.wifi_ssid:
         print(f"- Fallback Wi-Fi SSID: {args.wifi_ssid}")

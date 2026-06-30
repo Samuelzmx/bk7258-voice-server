@@ -52,6 +52,13 @@ jobs:
 
           "${CMD[@]}"
 
+      - name: Install ARMINO Python build helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --no-cache-dir --upgrade pip
+          python3 -m pip install --no-cache-dir "setuptools<81" click click-option-group
+
       - name: Build firmware
         shell: bash
         run: |

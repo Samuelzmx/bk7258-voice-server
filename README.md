@@ -45,6 +45,13 @@ On your Mac, download:
 8. Choose a folder on your Mac.
 9. Click `Open` when VS Code asks to open the cloned repo.
 
+If your Mac says Git or Command Line Tools are missing:
+
+1. Click `Install`.
+2. Wait for the install to finish.
+3. Open VS Code again.
+4. Repeat Step 1.
+
 ## Step 2: Set up the server
 
 1. Open the repo folder in Finder.
@@ -55,6 +62,11 @@ If macOS blocks it:
 1. Right-click `setup_server.command`.
 2. Click `Open`.
 3. Click `Open` again.
+
+Important:
+
+- use Python `3.13`
+- do not use Python `3.14` for this project
 
 ## Step 3: Add your API keys
 
@@ -202,7 +214,9 @@ These are the main files:
 - `.github/workflows/build-bk7258-firmware.yml`
   GitHub button that builds firmware with your Mac IP and Wi‑Fi
 - `scripts/prepare_bk_aidk.py`
-  Helper that edits the BK firmware source before build
+  Helper that copies the known-good BK7258 firmware overlay and then edits your server IP and Wi‑Fi before build
+- `firmware/overlay/`
+  The tested BK AIDK firmware files copied from the working local firmware tree
 - `.env`
   Your API keys
 
@@ -228,9 +242,11 @@ What the GitHub firmware build does:
 1. takes your Mac IP
 2. takes your Wi‑Fi name
 3. takes your Wi‑Fi password
-4. puts them into the firmware
-5. builds `all-app.bin`
-6. gives you the exact file to flash
+4. copies the tested BK7258 firmware overlay
+5. puts your Mac IP into the firmware
+6. puts your Wi‑Fi name and password into the firmware fallback
+7. builds `all-app.bin`
+8. gives you the exact file to flash
 
 What the server needs to work:
 
