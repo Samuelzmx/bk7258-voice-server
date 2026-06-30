@@ -116,6 +116,16 @@ Fill in:
 - `DEEPGRAM_API_KEY`
 - `ANTHROPIC_API_KEY`
 
+Exact `.env` format:
+
+```env
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+```
+
+If your team is reusing one shared set of keys, keep that in a private `.env`
+file outside Git history and copy it onto each engineer's machine.
+
 Do not commit `.env`.
 
 ### 3. Find Your Mac's LAN IP
