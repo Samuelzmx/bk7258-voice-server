@@ -170,6 +170,58 @@ Expected result:
 2. Wait a moment.
 3. The chip should answer back.
 
+## Project structure
+
+These are the main files:
+
+- `README.md`
+  This guide
+- `wss_server.py`
+  The actual voice server
+- `setup_server.command`
+  Double-click this once to set up Python and install packages
+- `start_server.command`
+  Double-click this to start the server
+- `.github/workflows/build-bk7258-firmware.yml`
+  GitHub button that builds firmware with your Mac IP and Wi‑Fi
+- `scripts/prepare_bk_aidk.py`
+  Helper that edits the BK firmware source before build
+- `.env`
+  Your API keys
+
+## How everything works
+
+This is the full runtime flow:
+
+1. The chip connects to your Wi‑Fi.
+2. The chip connects to your Mac at `ws://your-mac-ip:8765`.
+3. The server answers the chip handshake.
+4. The server sends startup audio to the chip.
+5. The chip plays the audio.
+6. You speak to the chip.
+7. The chip sends microphone audio to `wss_server.py`.
+8. `wss_server.py` sends that audio to Deepgram for speech-to-text.
+9. The text goes to Claude `claude-haiku-4-5`.
+10. Claude's reply goes to Deepgram for text-to-speech.
+11. The server sends the reply audio back to the chip.
+12. The chip speaks the reply.
+
+What the GitHub firmware build does:
+
+1. takes your Mac IP
+2. takes your Wi‑Fi name
+3. takes your Wi‑Fi password
+4. puts them into the firmware
+5. builds `all-app.bin`
+6. gives you the exact file to flash
+
+What the server needs to work:
+
+- your Mac and chip must be on the same Wi‑Fi
+- the chip firmware must contain the correct Mac IP
+- `.env` must contain `DEEPGRAM_API_KEY` and `ANTHROPIC_API_KEY`
+- `start_server.command` must be running
+
 ## If you want to force a test sentence
 
 Open Terminal in the repo folder and run:

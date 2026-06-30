@@ -8,12 +8,12 @@ on:
         required: true
         type: string
       wifi_ssid:
-        description: "Optional fallback Wi-Fi name to bake into the firmware"
-        required: false
+        description: "Wi-Fi name to bake into the firmware"
+        required: true
         type: string
       wifi_password:
-        description: "Optional fallback Wi-Fi password to bake into the firmware"
-        required: false
+        description: "Wi-Fi password to bake into the firmware"
+        required: true
         type: string
       disable_countdown:
         description: "Disable the stock auto-sleep countdown"
@@ -43,10 +43,8 @@ jobs:
             --sdk /tmp/bk_aidk \
             --server-ip "${{ github.event.inputs.server_ip }}")
 
-          if [ -n "${{ github.event.inputs.wifi_ssid }}" ] || [ -n "${{ github.event.inputs.wifi_password }}" ]; then
-            CMD+=(--wifi-ssid "${{ github.event.inputs.wifi_ssid }}")
-            CMD+=(--wifi-password "${{ github.event.inputs.wifi_password }}")
-          fi
+          CMD+=(--wifi-ssid "${{ github.event.inputs.wifi_ssid }}")
+          CMD+=(--wifi-password "${{ github.event.inputs.wifi_password }}")
 
           if [ "${{ github.event.inputs.disable_countdown }}" = "true" ]; then
             CMD+=(--disable-countdown)
