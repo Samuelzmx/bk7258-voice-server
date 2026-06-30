@@ -67,6 +67,11 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 5. Save the file.
 
+For testers:
+
+- keep the GitHub repo version generic
+- get the real API keys directly from the project owner
+
 ## Step 4: Find your Mac IP address
 
 1. Click the Apple menu.
