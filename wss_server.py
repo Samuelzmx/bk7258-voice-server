@@ -65,6 +65,7 @@ HOST = os.getenv("BK7258_HOST", "0.0.0.0").strip() or "0.0.0.0"
 CHIP_ENDPOINT = os.getenv("BK7258_CHIP_ENDPOINT", "ws://10.0.0.62:8765").strip()
 ADMIN_HOST = os.getenv("BK7258_ADMIN_HOST", "0.0.0.0").strip() or "0.0.0.0"
 ADMIN_PORT = int(os.getenv("BK7258_ADMIN_PORT", "8766"))
+PANEL_ACCESS_CODE = os.getenv("BK7258_PANEL_ACCESS_CODE", "").strip()
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 DEFAULT_ANTHROPIC_MODEL = os.getenv(
     "BK7258_ANTHROPIC_MODEL", "claude-haiku-4-5"
@@ -2052,6 +2053,7 @@ def server_status_dict() -> dict[str, Any]:
             "control_panel_scope": (
                 "lan" if ADMIN_HOST in {"0.0.0.0", "::", ""} else "local-only"
             ),
+            "panel_access": "protected" if PANEL_ACCESS_CODE else "open",
         },
         "config": config_public_dict(),
         "product": product_public_dict(),
@@ -2065,14 +2067,20 @@ def make_http_response(
     body: bytes,
     *,
     content_type: str,
+    extra_headers: list[tuple[str, str]] | None = None,
 ) -> bytes:
+    header_lines = [
+        f"HTTP/1.1 {status}",
+        f"Content-Type: {content_type}",
+        f"Content-Length: {len(body)}",
+        "Connection: close",
+    ]
+    if extra_headers:
+        for name, value in extra_headers:
+            header_lines.append(f"{name}: {value}")
     return (
-        f"HTTP/1.1 {status}\r\n"
-        f"Content-Type: {content_type}\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-    ).encode("utf-8") + body
+        ("\r\n".join(header_lines) + "\r\n\r\n").encode("utf-8") + body
+    )
 
 
 def admin_panel_url() -> str:
@@ -2083,6 +2091,140 @@ def admin_panel_url() -> str:
     else:
         host = ADMIN_HOST
     return f"http://{host}:{ADMIN_PORT}/"
+
+
+PANEL_AUTH_COOKIE_NAME = "bk7258_panel_auth"
+
+
+def panel_auth_cookie_value() -> str:
+    if not PANEL_ACCESS_CODE:
+        return ""
+    return hashlib.sha256(PANEL_ACCESS_CODE.encode("utf-8")).hexdigest()
+
+
+def parse_cookie_header(raw_cookie: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for part in raw_cookie.split(";"):
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        cookies[name.strip()] = value.strip()
+    return cookies
+
+
+def admin_request_authorized(headers: dict[str, str]) -> bool:
+    if not PANEL_ACCESS_CODE:
+        return True
+    expected = panel_auth_cookie_value()
+    header_code = headers.get("x-panel-code", "").strip()
+    if header_code and hashlib.sha256(header_code.encode("utf-8")).hexdigest() == expected:
+        return True
+    cookies = parse_cookie_header(headers.get("cookie", ""))
+    return cookies.get(PANEL_AUTH_COOKIE_NAME, "") == expected
+
+
+def auth_required_json_response() -> bytes:
+    return make_json_response(
+        "401 Unauthorized",
+        {"ok": False, "error": "panel authentication required"},
+    )
+
+
+def render_login_panel() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BK7258 Parent Access</title>
+  <style>
+    :root {
+      --bg: #f4efe5;
+      --card: #fffaf0;
+      --ink: #1f2933;
+      --soft: #52606d;
+      --accent: #0f766e;
+      --line: #d9cbb8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(15,118,110,0.16), transparent 28%),
+        radial-gradient(circle at top right, rgba(180,83,9,0.14), transparent 24%),
+        linear-gradient(180deg, #faf5eb, var(--bg));
+    }
+    .card {
+      width: min(92vw, 420px);
+      padding: 22px;
+      border-radius: 24px;
+      background: rgba(255,250,240,0.96);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 48px rgba(31,41,51,0.10);
+    }
+    h1 { margin: 0 0 10px; font-size: 2rem; line-height: 1; }
+    p { color: var(--soft); line-height: 1.45; }
+    label { display: block; margin: 14px 0 6px; color: var(--soft); }
+    input, button {
+      width: 100%;
+      font: inherit;
+      border-radius: 12px;
+    }
+    input {
+      border: 1px solid var(--line);
+      padding: 12px;
+      background: #fffdf8;
+      color: var(--ink);
+    }
+    button {
+      margin-top: 14px;
+      border: 0;
+      padding: 12px;
+      background: linear-gradient(135deg, var(--accent), #155e75);
+      color: white;
+      cursor: pointer;
+    }
+    .msg { margin-top: 10px; min-height: 1.3em; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <section class="card">
+    <h1>Parent Access</h1>
+    <p>Enter the local pairing code to open the BK7258 control panel on this network.</p>
+    <label for="panelCode">Access code</label>
+    <input id="panelCode" type="password" autocomplete="current-password">
+    <button id="loginBtn">Open Control Panel</button>
+    <div id="msg" class="msg"></div>
+  </section>
+  <script>
+    async function login() {
+      const msg = document.getElementById("msg");
+      const code = document.getElementById("panelCode").value.trim();
+      msg.textContent = "Checking...";
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code })
+      });
+      const data = await response.json();
+      if (response.ok && data.ok) {
+        window.location.href = "/";
+        return;
+      }
+      msg.textContent = data.error || "Access denied.";
+    }
+    document.getElementById("loginBtn").addEventListener("click", login);
+    document.getElementById("panelCode").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") login();
+    });
+  </script>
+</body>
+</html>"""
 
 
 def make_text_response(status: str, body: str) -> bytes:
@@ -2890,7 +3032,7 @@ async def handle_admin_connection(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
     try:
-        method, target, _headers, body = await read_http_request(reader)
+        method, target, headers, body = await read_http_request(reader)
     except Exception:
         writer.write(make_text_response("400 Bad Request", "bad request\n"))
         await writer.drain()
@@ -2901,8 +3043,51 @@ async def handle_admin_connection(
     try:
         parsed = urlsplit(target)
         params = parse_qs(parsed.query, keep_blank_values=False)
+        authorized = admin_request_authorized(headers)
+
+        if method == "POST" and parsed.path == "/api/auth":
+            payload = json.loads(body.decode("utf-8") or "{}")
+            code = str(payload.get("code", "")).strip()
+            if not PANEL_ACCESS_CODE:
+                writer.write(make_json_response("200 OK", {"ok": True, "auth": "not-required"}))
+                await writer.drain()
+                return
+            if hashlib.sha256(code.encode("utf-8")).hexdigest() != panel_auth_cookie_value():
+                writer.write(
+                    make_json_response(
+                        "401 Unauthorized",
+                        {"ok": False, "error": "wrong access code"},
+                    )
+                )
+                await writer.drain()
+                return
+            writer.write(
+                make_http_response(
+                    "200 OK",
+                    json.dumps({"ok": True}, ensure_ascii=True, indent=2).encode("utf-8"),
+                    content_type="application/json; charset=utf-8",
+                    extra_headers=[
+                        (
+                            "Set-Cookie",
+                            f"{PANEL_AUTH_COOKIE_NAME}={panel_auth_cookie_value()}; Path=/; HttpOnly; SameSite=Lax",
+                        )
+                    ],
+                )
+            )
+            await writer.drain()
+            return
 
         if method == "GET" and parsed.path == "/":
+            if not authorized:
+                writer.write(
+                    make_http_response(
+                        "200 OK",
+                        render_login_panel().encode("utf-8"),
+                        content_type="text/html; charset=utf-8",
+                    )
+                )
+                await writer.drain()
+                return
             writer.write(
                 make_http_response(
                     "200 OK",
@@ -2921,6 +3106,11 @@ async def handle_admin_connection(
                     content_type="application/manifest+json; charset=utf-8",
                 )
             )
+            await writer.drain()
+            return
+
+        if not authorized:
+            writer.write(auth_required_json_response())
             await writer.drain()
             return
 

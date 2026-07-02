@@ -18,6 +18,7 @@ Current server features:
 - paste the selected provider API key directly in the panel
 - selectable character presets like `companion`, `storyteller`, and `language_teacher`
 - family setup controls for toy name, child profile, safety mode, learning packs, and story library
+- optional parent access-code protection with `BK7258_PANEL_ACCESS_CODE`
 - direct `Send Speech` testing from the panel
 - backend latency simulation from the panel
 
@@ -36,6 +37,7 @@ Product planning docs:
 - `DEEPGRAM_API_KEY`
 - `ANTHROPIC_API_KEY`
 - optional `OPENAI_API_KEY`
+- optional `BK7258_PANEL_ACCESS_CODE`
 
 ## What to download
 
