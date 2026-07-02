@@ -21,6 +21,8 @@ Current server features:
 - optional parent access-code protection with `BK7258_PANEL_ACCESS_CODE`
 - phone onboarding page at `http://YOUR_MAC_IP:8766/onboarding`
 - structured content files in `content/` with live reload from the panel
+- fully local QR generation at `http://YOUR_MAC_IP:8766/onboarding-qr.png`
+- recent turns, recent sessions, and average latency in the parent panel
 - direct `Send Speech` testing from the panel
 - backend latency simulation from the panel
 
@@ -276,6 +278,8 @@ These are the main files:
   Structured learning-pack content that the server loads at runtime
 - `content/story_library.json`
   Structured story-library content that the server loads at runtime
+- `activity_state.json`
+  Saved recent turns and recent sessions for the parent dashboard
 - `WORKFLOW_STATUS.md`
   A short status and workflow summary
 - `setup_server.command`
@@ -316,7 +320,7 @@ How the phone control works:
 2. or the parent opens `/onboarding` first and uses the QR/link handoff
 3. the panel calls the server API on port `8766`
 4. if panel protection is enabled, the parent enters the local access code first
-5. the server updates runtime config, product setup, or queues speech
+5. the server updates runtime config, product setup, queues speech, and stores recent activity
 6. the chip stays connected to the voice server on port `8765`
 7. the chip responds with the selected character and low-latency voice path
 
@@ -326,6 +330,12 @@ How the structured content works:
 2. the server loads those files on boot
 3. the selected learning packs and story sets are injected into the system prompt
 4. the `Reload Content Files` button lets you refresh those JSON files without editing Python
+
+How the parent activity history works:
+
+1. the server stores recent turns and recent sessions in `activity_state.json`
+2. the control panel reads that history into `Recent Turns` and `Recent Sessions`
+3. the summary shows average saved turn latency for quick parent-facing status
 
 What the GitHub firmware build does:
 

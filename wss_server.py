@@ -25,7 +25,7 @@ import struct
 import subprocess
 import tempfile
 import time
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any
@@ -73,6 +73,14 @@ CONTENT_DIR = Path(
         str(BASE_DIR / "content"),
     )
 ).expanduser()
+ACTIVITY_STATE_PATH = Path(
+    os.getenv(
+        "BK7258_ACTIVITY_STATE_PATH",
+        str(BASE_DIR / "activity_state.json"),
+    )
+).expanduser()
+RECENT_TURN_LIMIT = int(os.getenv("BK7258_RECENT_TURN_LIMIT", "24"))
+RECENT_SESSION_LIMIT = int(os.getenv("BK7258_RECENT_SESSION_LIMIT", "16"))
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 DEFAULT_ANTHROPIC_MODEL = os.getenv(
     "BK7258_ANTHROPIC_MODEL", "claude-haiku-4-5"
@@ -302,6 +310,104 @@ class Session:
 
 ACTIVE_SESSIONS: dict[str, Session] = {}
 RUNTIME_CONFIG = RuntimeConfig()
+ONBOARDING_QR_CACHE: dict[str, bytes] = {}
+QR_HELPER_EXECUTABLE: Path | None = None
+
+
+def iso_timestamp(timestamp: float | None = None) -> str:
+    return time.strftime(
+        "%Y-%m-%dT%H:%M:%S%z",
+        time.localtime(timestamp if timestamp is not None else time.time()),
+    )
+
+
+DEFAULT_ACTIVITY_STATE: dict[str, Any] = {
+    "recent_turns": [],
+    "recent_sessions": [],
+}
+
+
+def trim_recent_items(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    return items[: max(1, limit)]
+
+
+def normalize_activity_state(raw: dict[str, Any] | None) -> dict[str, Any]:
+    base = {
+        "recent_turns": [],
+        "recent_sessions": [],
+    }
+    raw = raw or {}
+    for key, limit in (
+        ("recent_turns", RECENT_TURN_LIMIT),
+        ("recent_sessions", RECENT_SESSION_LIMIT),
+    ):
+        value = raw.get(key)
+        if isinstance(value, list):
+            base[key] = trim_recent_items(
+                [item for item in value if isinstance(item, dict)],
+                limit,
+            )
+    return base
+
+
+def load_activity_state() -> dict[str, Any]:
+    if not ACTIVITY_STATE_PATH.exists():
+        return normalize_activity_state(None)
+    try:
+        payload = json.loads(ACTIVITY_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("failed to load activity state from {}", ACTIVITY_STATE_PATH)
+        return normalize_activity_state(None)
+    if not isinstance(payload, dict):
+        return normalize_activity_state(None)
+    return normalize_activity_state(payload)
+
+
+ACTIVITY_STATE = load_activity_state()
+
+
+def save_activity_state() -> None:
+    try:
+        ACTIVITY_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ACTIVITY_STATE_PATH.write_text(
+            json.dumps(ACTIVITY_STATE, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("failed to save activity state to {}: {}", ACTIVITY_STATE_PATH, exc)
+
+
+def append_activity_item(key: str, item: dict[str, Any], limit: int) -> None:
+    bucket = ACTIVITY_STATE.setdefault(key, [])
+    if not isinstance(bucket, list):
+        bucket = []
+        ACTIVITY_STATE[key] = bucket
+    bucket.insert(0, item)
+    del bucket[limit:]
+    save_activity_state()
+
+
+def activity_public_dict() -> dict[str, Any]:
+    recent_turns = ACTIVITY_STATE.get("recent_turns", [])
+    recent_sessions = ACTIVITY_STATE.get("recent_sessions", [])
+    completed_turns = [
+        item
+        for item in recent_turns
+        if isinstance(item, dict) and isinstance(item.get("total_ms"), (int, float))
+    ]
+    average_total_ms = 0.0
+    if completed_turns:
+        average_total_ms = sum(float(item["total_ms"]) for item in completed_turns) / len(completed_turns)
+    return {
+        "recent_turns": recent_turns,
+        "recent_sessions": recent_sessions,
+        "summary": {
+            "recent_turn_count": len(recent_turns),
+            "recent_session_count": len(recent_sessions),
+            "average_total_ms": round(average_total_ms, 1),
+        },
+        "storage_path": str(ACTIVITY_STATE_PATH),
+    }
 
 
 def clone_content_catalog(catalog: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -473,6 +579,50 @@ def reload_product_content() -> dict[str, Any]:
     PRODUCT_STATE = normalize_product_state(PRODUCT_STATE)
     save_product_state()
     return product_public_dict()
+
+
+def record_turn_activity(session: Session, metrics: dict[str, Any]) -> None:
+    append_activity_item(
+        "recent_turns",
+        {
+            "timestamp": iso_timestamp(),
+            "device_id": session.device_id,
+            "peer": session.peer,
+            "character_preset": RUNTIME_CONFIG.character_preset,
+            "llm_provider": RUNTIME_CONFIG.llm_provider,
+            "toy_name": PRODUCT_STATE["device_name"],
+            "child_name": PRODUCT_STATE["child_name"],
+            "turn_id": metrics.get("turn_id", 0),
+            "transcript": metrics.get("transcript", ""),
+            "reply": metrics.get("reply", ""),
+            "stt_ms": metrics.get("stt_ms", 0.0),
+            "llm_ms": metrics.get("llm_ms", 0.0),
+            "tts_ms": metrics.get("tts_ms", 0.0),
+            "total_ms": metrics.get("total_ms", 0.0),
+            "commit_to_reply_ms": metrics.get("commit_to_reply_ms", 0.0),
+        },
+        RECENT_TURN_LIMIT,
+    )
+
+
+def record_session_activity(session: Session) -> None:
+    append_activity_item(
+        "recent_sessions",
+        {
+            "connected_at": iso_timestamp(session.connected_at),
+            "ended_at": iso_timestamp(),
+            "device_id": session.device_id,
+            "peer": session.peer,
+            "toy_name": PRODUCT_STATE["device_name"],
+            "child_name": PRODUCT_STATE["child_name"],
+            "character_preset": RUNTIME_CONFIG.character_preset,
+            "llm_provider": RUNTIME_CONFIG.llm_provider,
+            "duration_sec": round(time.time() - session.connected_at, 1),
+            "turn_count": session.turn_counter,
+            "last_turn_metrics": dict(session.last_turn_metrics),
+        },
+        RECENT_SESSION_LIMIT,
+    )
 
 
 def get_provider_api_key(provider: str) -> str:
@@ -1840,6 +1990,7 @@ async def run_pipeline_with_audio(
                 "audio_bytes": len(raw_audio),
                 "opus_packets": len(opus_packets),
             }
+            record_turn_activity(session, session.last_turn_metrics)
             logger.info(
                 "[{}] turn {} latency stt={:.0f}ms llm={:.0f}ms tts={:.0f}ms total={:.0f}ms",
                 session.peer,
@@ -2080,6 +2231,7 @@ async def close_session(session: Session) -> None:
         return
 
     session.closing = True
+    record_session_activity(session)
     if session.device_id and ACTIVE_SESSIONS.get(session.device_id) is session:
         ACTIVE_SESSIONS.pop(session.device_id, None)
     for task in tuple(session.tasks):
@@ -2126,6 +2278,7 @@ def session_public_dict(session: Session) -> dict[str, Any]:
         "output_audio_rate": session.output_audio_rate,
         "output_audio_duration_ms": session.output_audio_duration_ms,
         "seq": session.seq,
+        "turn_counter": session.turn_counter,
         "active_turn_id": session.active_turn_id,
         "last_turn_metrics": session.last_turn_metrics,
     }
@@ -2155,6 +2308,7 @@ def server_status_dict() -> dict[str, Any]:
         },
         "config": config_public_dict(),
         "product": product_public_dict(),
+        "activity": activity_public_dict(),
         "sessions": sessions,
         "connected_session_count": len(sessions),
     }
@@ -2354,11 +2508,73 @@ def web_manifest_dict() -> dict[str, Any]:
     }
 
 
-def onboarding_qr_image_url(value: str) -> str:
-    return (
-        "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data="
-        + quote(value, safe="")
-    )
+def qr_helper_executable_path() -> Path:
+    global QR_HELPER_EXECUTABLE
+    if QR_HELPER_EXECUTABLE and QR_HELPER_EXECUTABLE.exists():
+        return QR_HELPER_EXECUTABLE
+
+    helper_dir = Path(tempfile.gettempdir()) / "bk7258_qr_helper"
+    helper_dir.mkdir(parents=True, exist_ok=True)
+    source_path = helper_dir / "qr_helper.swift"
+    executable_path = helper_dir / "qr_helper"
+    source = """import Foundation
+import CoreImage
+import AppKit
+
+let input = CommandLine.arguments[1]
+let data = Data(input.utf8)
+guard let filter = CIFilter(name: "CIQRCodeGenerator") else { fatalError("missing qr filter") }
+filter.setValue(data, forKey: "inputMessage")
+filter.setValue("M", forKey: "inputCorrectionLevel")
+guard let ciImage = filter.outputImage else { fatalError("missing qr image") }
+let scaled = ciImage.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+let rep = NSCIImageRep(ciImage: scaled)
+let image = NSImage(size: rep.size)
+image.addRepresentation(rep)
+guard let tiff = image.tiffRepresentation,
+      let bitmap = NSBitmapImageRep(data: tiff),
+      let png = bitmap.representation(using: .png, properties: [:]) else {
+    fatalError("failed to convert qr to png")
+}
+FileHandle.standardOutput.write(png)
+"""
+    try:
+        if not source_path.exists() or source_path.read_text(encoding="utf-8") != source:
+            source_path.write_text(source, encoding="utf-8")
+        if not executable_path.exists():
+            subprocess.run(
+                ["swiftc", str(source_path), "-o", str(executable_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("failed to build local QR helper: {}", exc)
+        raise RuntimeError("failed to build local QR helper") from exc
+    QR_HELPER_EXECUTABLE = executable_path
+    return executable_path
+
+
+def generate_local_qr_png(value: str) -> bytes | None:
+    cached = ONBOARDING_QR_CACHE.get(value)
+    if cached is not None:
+        return cached
+    try:
+        executable_path = qr_helper_executable_path()
+        result = subprocess.run(
+            [str(executable_path), value],
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        logger.warning("failed to generate local QR PNG: {}", exc)
+        return None
+    if not result.stdout:
+        return None
+    ONBOARDING_QR_CACHE[value] = result.stdout
+    return result.stdout
 
 
 def onboarding_public_dict() -> dict[str, Any]:
@@ -2395,7 +2611,8 @@ def onboarding_public_dict() -> dict[str, Any]:
             ),
             "Use Add to Home Screen to make the panel feel like an app.",
         ],
-        "qr_image_url": onboarding_qr_image_url(panel_url),
+        "qr_image_url": f"{panel_url.rstrip('/')}/onboarding-qr.png",
+        "qr_mode": "local-macos",
     }
 
 
@@ -2558,7 +2775,7 @@ def render_onboarding_page() -> str:
       <section class="card">
         <h2>Scan On Phone</h2>
         <img class="qr" src="{qr_image_url}" alt="QR code for the BK7258 parent panel">
-        <p class="muted">If the QR image does not load, open the link manually. The QR image uses a simple internet QR service, but the actual panel still runs on your local Mac.</p>
+        <p class="muted">This QR is generated locally on the Mac mini. If it does not load, open the link manually.</p>
       </section>
     </div>
   </div>
@@ -2814,6 +3031,27 @@ def render_control_panel() -> str:
       margin-top: 0;
       min-height: 58px;
     }}
+    .activity-list {{
+      display: grid;
+      gap: 10px;
+    }}
+    .activity-item {{
+      padding: 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(15,118,110,0.12);
+      background: rgba(255,255,255,0.84);
+    }}
+    .activity-item strong {{
+      display: block;
+      margin-bottom: 4px;
+      font-size: 0.97rem;
+    }}
+    .activity-item span {{
+      display: block;
+      color: var(--soft);
+      font-size: 0.86rem;
+      line-height: 1.35;
+    }}
     .install-note {{
       margin-top: 12px;
       padding: 10px 12px;
@@ -2930,6 +3168,15 @@ def render_control_panel() -> str:
           <button class="secondary quick-say" data-text="Can you repeat after me: hello, thank you, and goodbye.">Repeat Words</button>
         </div>
         <p id="quickResult" class="muted"></p>
+      </section>
+      <section class="card section-stack">
+        <h2>Recent Turns</h2>
+        <div id="activitySummary"></div>
+        <div id="recentTurns" class="activity-list"></div>
+      </section>
+      <section class="card section-stack">
+        <h2>Recent Sessions</h2>
+        <div id="recentSessions" class="activity-list"></div>
       </section>
       <section class="card section-stack">
         <h2>Learning Packs</h2>
@@ -3158,6 +3405,54 @@ def render_control_panel() -> str:
       document.getElementById("sessions").textContent = JSON.stringify(status.sessions, null, 2);
     }}
 
+    function shortenText(value, limit = 120) {{
+      const text = String(value || "").trim();
+      if (!text) return "No text yet.";
+      return text.length <= limit ? text : text.slice(0, limit - 1) + "…";
+    }}
+
+    function showActivity(status) {{
+      const activity = status.activity || {{}};
+      const summary = activity.summary || {{}};
+      document.getElementById("activitySummary").innerHTML = `
+        <span class="pill">Recent turns: ${{summary.recent_turn_count || 0}}</span>
+        <span class="pill">Recent sessions: ${{summary.recent_session_count || 0}}</span>
+        <span class="pill">Avg total latency: ${{summary.average_total_ms || 0}} ms</span>
+      `;
+
+      const recentTurns = document.getElementById("recentTurns");
+      recentTurns.innerHTML = "";
+      for (const turn of (activity.recent_turns || []).slice(0, 6)) {{
+        const item = document.createElement("div");
+        item.className = "activity-item";
+        item.innerHTML = `
+          <strong>${{turn.child_name || "Child"}} asked: ${{shortenText(turn.transcript, 80)}}</strong>
+          <span>${{shortenText(turn.reply, 110)}}</span>
+          <span>${{turn.timestamp || ""}} | ${{turn.character_preset || "companion"}} | ${{turn.llm_provider || "anthropic"}} | total ${{turn.total_ms || 0}} ms</span>
+        `;
+        recentTurns.appendChild(item);
+      }}
+      if (!recentTurns.innerHTML) {{
+        recentTurns.innerHTML = '<div class="activity-item"><span>No saved turns yet.</span></div>';
+      }}
+
+      const recentSessions = document.getElementById("recentSessions");
+      recentSessions.innerHTML = "";
+      for (const session of (activity.recent_sessions || []).slice(0, 6)) {{
+        const item = document.createElement("div");
+        item.className = "activity-item";
+        item.innerHTML = `
+          <strong>${{session.child_name || "Child"}} | ${{session.character_preset || "companion"}}</strong>
+          <span>Started: ${{session.connected_at || ""}}</span>
+          <span>Duration: ${{session.duration_sec || 0}} sec | Turns: ${{session.turn_count || 0}} | Provider: ${{session.llm_provider || "anthropic"}}</span>
+        `;
+        recentSessions.appendChild(item);
+      }}
+      if (!recentSessions.innerHTML) {{
+        recentSessions.innerHTML = '<div class="activity-item"><span>No saved sessions yet.</span></div>';
+      }}
+    }}
+
     async function refreshStatus() {{
       const response = await fetch("/api/status");
       state.status = await response.json();
@@ -3165,6 +3460,7 @@ def render_control_panel() -> str:
       showStatusBanner(state.status);
       populateConfig(state.status);
       populateProduct(state.status);
+      showActivity(state.status);
       showSessions(state.status);
     }}
 
@@ -3287,6 +3583,7 @@ def render_control_panel() -> str:
     showStatusBanner(state.status);
     populateConfig(state.status);
     populateProduct(state.status);
+    showActivity(state.status);
     showSessions(state.status);
     setInterval(refreshStatus, 2500);
   </script>
@@ -3452,6 +3749,21 @@ async def handle_admin_connection(
             await writer.drain()
             return
 
+        if method == "GET" and parsed.path == "/onboarding-qr.png":
+            qr_png = generate_local_qr_png(admin_panel_url())
+            if qr_png is None:
+                writer.write(make_text_response("503 Service Unavailable", "local qr unavailable\n"))
+            else:
+                writer.write(
+                    make_http_response(
+                        "200 OK",
+                        qr_png,
+                        content_type="image/png",
+                    )
+                )
+            await writer.drain()
+            return
+
         if method == "GET" and parsed.path == "/manifest.webmanifest":
             writer.write(
                 make_http_response(
@@ -3475,6 +3787,11 @@ async def handle_admin_connection(
 
         if method == "GET" and parsed.path == "/api/status":
             writer.write(make_json_response("200 OK", server_status_dict()))
+            await writer.drain()
+            return
+
+        if method == "GET" and parsed.path == "/api/activity":
+            writer.write(make_json_response("200 OK", {"ok": True, "activity": activity_public_dict()}))
             await writer.drain()
             return
 

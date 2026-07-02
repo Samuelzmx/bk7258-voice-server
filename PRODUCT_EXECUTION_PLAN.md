@@ -44,7 +44,9 @@ The current experimental product layer adds:
 - structured content JSON files
 - content reload without Python edits
 - a phone onboarding page
+- a fully local onboarding QR path
 - optional local parent access-code protection
+- persistent recent-turn and recent-session history for parents
 
 These settings feed directly into the runtime system prompt so the toy can behave more like a real personalized product.
 
@@ -154,9 +156,9 @@ Ship a version that does not depend on manual local engineering steps.
 1. Keep `main` as the stable working branch.
 2. Move product work to a separate branch such as `product-beta-foundation`.
 3. Keep testing the family setup UI against the live chip workflow.
-4. Replace the temporary internet QR image service with a fully local QR generator.
-5. Add usage history and last-session visibility for parents.
-6. Expand structured content into age-tagged lesson and story catalogs.
+4. Expand the parent dashboard beyond basic history into summaries and filters.
+5. Add age-tagged lesson and story catalogs on top of structured content.
+6. Start separating product UI concerns from the single-file server implementation.
 
 ## Definition Of Success
 
