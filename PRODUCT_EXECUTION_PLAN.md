@@ -41,6 +41,10 @@ The current experimental product layer adds:
 - safety mode
 - selectable learning packs
 - selectable story library
+- structured content JSON files
+- content reload without Python edits
+- a phone onboarding page
+- optional local parent access-code protection
 
 These settings feed directly into the runtime system prompt so the toy can behave more like a real personalized product.
 
@@ -149,10 +153,10 @@ Ship a version that does not depend on manual local engineering steps.
 
 1. Keep `main` as the stable working branch.
 2. Move product work to a separate branch such as `product-beta-foundation`.
-3. Finish the family setup UI wiring in the control panel.
-4. Add a QR onboarding page for phone access.
-5. Add pairing-code protection to the control panel.
-6. Move learning packs and stories into structured content files.
+3. Keep testing the family setup UI against the live chip workflow.
+4. Replace the temporary internet QR image service with a fully local QR generator.
+5. Add usage history and last-session visibility for parents.
+6. Expand structured content into age-tagged lesson and story catalogs.
 
 ## Definition Of Success
 

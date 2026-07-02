@@ -25,7 +25,7 @@ import struct
 import subprocess
 import tempfile
 import time
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,12 +60,19 @@ from loguru import logger
 
 load_dotenv(Path(__file__).with_name(".env"))
 
+BASE_DIR = Path(__file__).resolve().parent
 PORT = int(os.getenv("BK7258_PORT", "8765"))
 HOST = os.getenv("BK7258_HOST", "0.0.0.0").strip() or "0.0.0.0"
 CHIP_ENDPOINT = os.getenv("BK7258_CHIP_ENDPOINT", "ws://10.0.0.62:8765").strip()
 ADMIN_HOST = os.getenv("BK7258_ADMIN_HOST", "0.0.0.0").strip() or "0.0.0.0"
 ADMIN_PORT = int(os.getenv("BK7258_ADMIN_PORT", "8766"))
 PANEL_ACCESS_CODE = os.getenv("BK7258_PANEL_ACCESS_CODE", "").strip()
+CONTENT_DIR = Path(
+    os.getenv(
+        "BK7258_CONTENT_DIR",
+        str(BASE_DIR / "content"),
+    )
+).expanduser()
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 DEFAULT_ANTHROPIC_MODEL = os.getenv(
     "BK7258_ANTHROPIC_MODEL", "claude-haiku-4-5"
@@ -154,7 +161,7 @@ CHARACTER_PRESETS: dict[str, str] = {
 PRODUCT_STATE_PATH = Path(
     os.getenv(
         "BK7258_PRODUCT_STATE_PATH",
-        str(Path(__file__).with_name("product_state.json")),
+        str(BASE_DIR / "product_state.json"),
     )
 ).expanduser()
 CHILD_AGE_BANDS = ["3-4", "5-6", "7-8", "9-10"]
@@ -163,7 +170,7 @@ SAFETY_MODES = {
     "gentle": "Keep replies extra gentle, emotionally safe, and reassuring for young children.",
     "independent_reader": "Encourage curiosity and learning while still staying child-safe and easy to understand.",
 }
-LEARNING_PACKS: dict[str, dict[str, str]] = {
+DEFAULT_LEARNING_PACKS: dict[str, dict[str, str]] = {
     "english_starter": {
         "title": "English Starter",
         "summary": "Teach greetings, simple vocabulary, and short repeat-after-me phrases.",
@@ -185,7 +192,7 @@ LEARNING_PACKS: dict[str, dict[str, str]] = {
         "prompt": "Explain simple science ideas in an easy, vivid way and invite the child to notice things around them.",
     },
 }
-STORY_LIBRARY: dict[str, dict[str, str]] = {
+DEFAULT_STORY_LIBRARY: dict[str, dict[str, str]] = {
     "forest_friends": {
         "title": "Forest Friends",
         "summary": "Gentle stories about animal friends helping each other in a bright forest.",
@@ -207,7 +214,9 @@ STORY_LIBRARY: dict[str, dict[str, str]] = {
         "prompt": "If telling a bedtime story, use calm language, soft imagery, and a peaceful ending.",
     },
 }
-DEFAULT_PRODUCT_STATE: dict[str, Any] = {
+LEARNING_PACKS_PATH = CONTENT_DIR / "learning_packs.json"
+STORY_LIBRARY_PATH = CONTENT_DIR / "story_library.json"
+DEFAULT_PRODUCT_STATE_FIELDS: dict[str, Any] = {
     "device_name": "Dawn",
     "parent_name": "",
     "child_name": "Friend",
@@ -215,8 +224,6 @@ DEFAULT_PRODUCT_STATE: dict[str, Any] = {
     "child_interests": "",
     "parent_goals": "",
     "safety_mode": "balanced",
-    "active_learning_pack_ids": ["english_starter"],
-    "active_story_ids": ["forest_friends"],
 }
 
 
@@ -297,6 +304,82 @@ ACTIVE_SESSIONS: dict[str, Session] = {}
 RUNTIME_CONFIG = RuntimeConfig()
 
 
+def clone_content_catalog(catalog: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    return {key: dict(value) for key, value in catalog.items()}
+
+
+def normalize_content_entry(entry_id: str, raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    title = str(raw.get("title", "")).strip() or entry_id.replace("_", " ").title()
+    summary = str(raw.get("summary", "")).strip()
+    prompt = str(raw.get("prompt", "")).strip()
+    if not summary or not prompt:
+        return None
+    return {
+        "title": title,
+        "summary": summary,
+        "prompt": prompt,
+    }
+
+
+def load_content_catalog(
+    path: Path,
+    fallback: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    if not path.exists():
+        return clone_content_catalog(fallback)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("failed to load content catalog from {}", path)
+        return clone_content_catalog(fallback)
+    if not isinstance(payload, dict):
+        logger.warning("content catalog at {} was not a JSON object", path)
+        return clone_content_catalog(fallback)
+    normalized: dict[str, dict[str, str]] = {}
+    for entry_id, raw_entry in payload.items():
+        key = str(entry_id).strip()
+        if not key:
+            continue
+        entry = normalize_content_entry(key, raw_entry)
+        if entry is None:
+            logger.warning("skipping invalid content entry '{}' in {}", key, path)
+            continue
+        normalized[key] = entry
+    if normalized:
+        return normalized
+    logger.warning("content catalog at {} had no valid entries", path)
+    return clone_content_catalog(fallback)
+
+
+LEARNING_PACKS = load_content_catalog(LEARNING_PACKS_PATH, DEFAULT_LEARNING_PACKS)
+STORY_LIBRARY = load_content_catalog(STORY_LIBRARY_PATH, DEFAULT_STORY_LIBRARY)
+
+
+def default_selected_ids(
+    catalog: dict[str, dict[str, str]],
+    preferred: list[str],
+) -> list[str]:
+    selected = [entry_id for entry_id in preferred if entry_id in catalog]
+    if selected:
+        return selected
+    return list(catalog)[:1]
+
+
+def default_product_state() -> dict[str, Any]:
+    base = dict(DEFAULT_PRODUCT_STATE_FIELDS)
+    base["active_learning_pack_ids"] = default_selected_ids(
+        LEARNING_PACKS,
+        ["english_starter"],
+    )
+    base["active_story_ids"] = default_selected_ids(
+        STORY_LIBRARY,
+        ["forest_friends"],
+    )
+    return base
+
+
 def sanitize_string_list(value: Any, *, allowed: set[str], fallback: list[str]) -> list[str]:
     if not isinstance(value, list):
         return list(fallback)
@@ -309,7 +392,7 @@ def sanitize_string_list(value: Any, *, allowed: set[str], fallback: list[str]) 
 
 
 def normalize_product_state(raw: dict[str, Any] | None) -> dict[str, Any]:
-    base = dict(DEFAULT_PRODUCT_STATE)
+    base = default_product_state()
     raw = raw or {}
     base["device_name"] = str(raw.get("device_name", base["device_name"])).strip() or base["device_name"]
     base["parent_name"] = str(raw.get("parent_name", base["parent_name"])).strip()
@@ -323,12 +406,12 @@ def normalize_product_state(raw: dict[str, Any] | None) -> dict[str, Any]:
     base["active_learning_pack_ids"] = sanitize_string_list(
         raw.get("active_learning_pack_ids"),
         allowed=set(LEARNING_PACKS),
-        fallback=list(DEFAULT_PRODUCT_STATE["active_learning_pack_ids"]),
+        fallback=list(base["active_learning_pack_ids"]),
     )
     base["active_story_ids"] = sanitize_string_list(
         raw.get("active_story_ids"),
         allowed=set(STORY_LIBRARY),
-        fallback=list(DEFAULT_PRODUCT_STATE["active_story_ids"]),
+        fallback=list(base["active_story_ids"]),
     )
     return base
 
@@ -367,6 +450,11 @@ def product_public_dict() -> dict[str, Any]:
         "safety_modes": SAFETY_MODES,
         "learning_packs": LEARNING_PACKS,
         "story_library": STORY_LIBRARY,
+        "content_files": {
+            "content_dir": str(CONTENT_DIR),
+            "learning_packs_path": str(LEARNING_PACKS_PATH),
+            "story_library_path": str(STORY_LIBRARY_PATH),
+        },
         "rag_mode": "local-library",
     }
 
@@ -374,6 +462,15 @@ def product_public_dict() -> dict[str, Any]:
 def apply_product_state(update: dict[str, Any]) -> dict[str, Any]:
     global PRODUCT_STATE
     PRODUCT_STATE = normalize_product_state({**PRODUCT_STATE, **update})
+    save_product_state()
+    return product_public_dict()
+
+
+def reload_product_content() -> dict[str, Any]:
+    global LEARNING_PACKS, STORY_LIBRARY, PRODUCT_STATE
+    LEARNING_PACKS = load_content_catalog(LEARNING_PACKS_PATH, DEFAULT_LEARNING_PACKS)
+    STORY_LIBRARY = load_content_catalog(STORY_LIBRARY_PATH, DEFAULT_STORY_LIBRARY)
+    PRODUCT_STATE = normalize_product_state(PRODUCT_STATE)
     save_product_state()
     return product_public_dict()
 
@@ -2050,6 +2147,7 @@ def server_status_dict() -> dict[str, Any]:
             "chip_endpoint": CHIP_ENDPOINT,
             "usb_role": "power-and-flash-only",
             "admin_panel_url": admin_panel_url(),
+            "onboarding_url": f"{admin_panel_url().rstrip('/')}/onboarding",
             "control_panel_scope": (
                 "lan" if ADMIN_HOST in {"0.0.0.0", "::", ""} else "local-only"
             ),
@@ -2254,6 +2352,229 @@ def web_manifest_dict() -> dict[str, Any]:
         "theme_color": "#0f766e",
         "description": "Control the BK7258 voice toy from your phone on the same Wi-Fi.",
     }
+
+
+def onboarding_qr_image_url(value: str) -> str:
+    return (
+        "https://api.qrserver.com/v1/create-qr-code/?size=240x240&data="
+        + quote(value, safe="")
+    )
+
+
+def onboarding_public_dict() -> dict[str, Any]:
+    panel_url = admin_panel_url()
+    onboarding_url = f"{panel_url.rstrip('/')}/onboarding"
+    chip_target = urlsplit(CHIP_ENDPOINT)
+    chip_host = chip_target.hostname or ""
+    return {
+        "panel_url": panel_url,
+        "onboarding_url": onboarding_url,
+        "panel_access": "protected" if PANEL_ACCESS_CODE else "open",
+        "access_code_required": bool(PANEL_ACCESS_CODE),
+        "same_wifi_required": True,
+        "server_ipv4": detect_local_ipv4(),
+        "chip_host": chip_host,
+        "chip_port": chip_target.port or PORT,
+        "copy_text": (
+            "BK7258 parent setup\n"
+            f"Open this on your phone: {panel_url}\n"
+            "Stay on the same Wi-Fi as the Mac and the toy.\n"
+            + (
+                "You will need the local access code after the page opens.\n"
+                if PANEL_ACCESS_CODE
+                else "No access code is currently required on this local network.\n"
+            )
+        ).strip(),
+        "phone_steps": [
+            "Connect your phone to the same Wi-Fi as the Mac and the toy.",
+            f"Open {panel_url} or scan the QR code on this page.",
+            (
+                "Enter the local access code if the parent panel is protected."
+                if PANEL_ACCESS_CODE
+                else "The panel is currently open on the local network."
+            ),
+            "Use Add to Home Screen to make the panel feel like an app.",
+        ],
+        "qr_image_url": onboarding_qr_image_url(panel_url),
+    }
+
+
+def render_onboarding_page() -> str:
+    onboarding = onboarding_public_dict()
+    panel_url = html.escape(onboarding["panel_url"])
+    onboarding_url = html.escape(onboarding["onboarding_url"])
+    qr_image_url = html.escape(onboarding["qr_image_url"])
+    copy_text = json.dumps(onboarding["copy_text"], ensure_ascii=True)
+    steps_html = "".join(
+        f"<li>{html.escape(step)}</li>" for step in onboarding["phone_steps"]
+    )
+    access_line = (
+        "This parent panel is currently protected with a local access code."
+        if onboarding["access_code_required"]
+        else "This parent panel is currently open to devices on the same Wi-Fi."
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
+  <title>BK7258 Parent Onboarding</title>
+  <style>
+    :root {{
+      --bg: #f4efe5;
+      --card: #fffaf0;
+      --ink: #1f2933;
+      --soft: #52606d;
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --line: #d9cbb8;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(15,118,110,0.16), transparent 28%),
+        radial-gradient(circle at top right, rgba(180,83,9,0.14), transparent 24%),
+        linear-gradient(180deg, #faf5eb, var(--bg));
+      min-height: 100vh;
+    }}
+    .wrap {{
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }}
+    .hero, .card {{
+      background: rgba(255,250,240,0.94);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 18px 48px rgba(31,41,51,0.08);
+    }}
+    .hero {{
+      padding: 22px;
+      margin-bottom: 18px;
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: clamp(2rem, 6vw, 3.8rem);
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+    }}
+    p, li {{
+      color: var(--soft);
+      line-height: 1.45;
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }}
+    .card {{
+      padding: 18px;
+    }}
+    .actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }}
+    a.button, button {{
+      appearance: none;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: linear-gradient(135deg, var(--accent), #155e75);
+      color: white;
+      text-decoration: none;
+      font: inherit;
+      cursor: pointer;
+    }}
+    button.secondary {{
+      background: linear-gradient(135deg, var(--accent-2), #92400e);
+    }}
+    .url-box {{
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 16px;
+      background: #fffdf8;
+      border: 1px solid var(--line);
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }}
+    .qr {{
+      width: min(100%, 260px);
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: white;
+    }}
+    .pill {{
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(15,118,110,0.12);
+      color: var(--accent);
+      font-size: 0.92rem;
+      margin: 0 8px 8px 0;
+    }}
+    .pill a {{
+      color: inherit;
+      text-decoration: none;
+      font-weight: 600;
+    }}
+    .muted {{
+      margin-top: 10px;
+      color: var(--soft);
+      font-size: 0.92rem;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Parent Onboarding</h1>
+      <p>This page is the product-style handoff for a phone. It gives the parent the local link, QR path, and the exact next step to reach the BK7258 control panel.</p>
+      <div style="margin-top:14px;">
+        <span class="pill">Panel: {panel_url}</span>
+        <span class="pill">Onboarding: {onboarding_url}</span>
+        <span class="pill">Access: {"protected" if onboarding["access_code_required"] else "open"}</span>
+      </div>
+    </section>
+    <div class="grid">
+      <section class="card">
+        <h2>Phone Steps</h2>
+        <ol>
+          {steps_html}
+        </ol>
+        <p>{html.escape(access_line)}</p>
+        <div class="actions">
+          <a class="button" href="{panel_url}">Open Parent Panel</a>
+          <button id="copyBtn" class="secondary">Copy Phone Link</button>
+        </div>
+        <div class="url-box">{panel_url}</div>
+        <p id="copyResult" class="muted"></p>
+      </section>
+      <section class="card">
+        <h2>Scan On Phone</h2>
+        <img class="qr" src="{qr_image_url}" alt="QR code for the BK7258 parent panel">
+        <p class="muted">If the QR image does not load, open the link manually. The QR image uses a simple internet QR service, but the actual panel still runs on your local Mac.</p>
+      </section>
+    </div>
+  </div>
+  <script>
+    const copyText = {copy_text};
+    document.getElementById("copyBtn").addEventListener("click", async () => {{
+      try {{
+        await navigator.clipboard.writeText(copyText);
+        document.getElementById("copyResult").textContent = "Phone setup text copied.";
+      }} catch (_error) {{
+        document.getElementById("copyResult").textContent = "Copy failed. Copy the URL manually.";
+      }}
+    }});
+  </script>
+</body>
+</html>"""
 
 
 def render_control_panel() -> str:
@@ -2556,6 +2877,7 @@ def render_control_panel() -> str:
         <h2>Connection</h2>
         <div id="transport"></div>
         <p class="muted">This panel is LAN-accessible right now, so phones on the same Wi-Fi can control the chip. It is not public on the internet.</p>
+        <a href="/onboarding" target="_blank" rel="noreferrer">Open phone onboarding page</a>
       </section>
       <section class="card section-stack">
         <h2>Family Setup</h2>
@@ -2574,7 +2896,9 @@ def render_control_panel() -> str:
         <label for="safetyMode">Safety mode</label>
         <select id="safetyMode"></select>
         <button id="saveFamily" class="secondary">Save Family Setup</button>
+        <button id="reloadContent" class="ghost">Reload Content Files</button>
         <p id="familyResult" class="muted"></p>
+        <p id="reloadContentResult" class="muted"></p>
       </section>
       <section class="card section-stack">
         <h2>Quick Modes</h2>
@@ -2699,8 +3023,14 @@ def render_control_panel() -> str:
         <span class="pill">Admin: ${{
           transport.admin_panel_url
         }}</span>
+        <span class="pill"><a href="${{
+          transport.onboarding_url
+        }}" target="_blank" rel="noreferrer">Phone onboarding</a></span>
         <span class="pill">Panel scope: ${{
           transport.control_panel_scope
+        }}</span>
+        <span class="pill">Panel access: ${{
+          transport.panel_access
         }}</span>
         <span class="pill">Sessions: ${{
           status.connected_session_count
@@ -2908,6 +3238,18 @@ def render_control_panel() -> str:
       return data;
     }}
 
+    async function reloadContent() {{
+      document.getElementById("reloadContentResult").textContent = "Reloading content files...";
+      const response = await fetch("/api/reload-content", {{
+        method: "POST"
+      }});
+      const data = await response.json();
+      document.getElementById("reloadContentResult").textContent =
+        data.ok ? "Content files reloaded." : JSON.stringify(data);
+      await refreshStatus();
+      return data;
+    }}
+
     async function runSimulation() {{
       const text = document.getElementById("simulateText").value.trim();
       document.getElementById("simulationOutput").textContent = "Running...";
@@ -2928,6 +3270,7 @@ def render_control_panel() -> str:
     document.getElementById("speakBtn").addEventListener("click", sendSpeech);
     document.getElementById("saveConfig").addEventListener("click", saveConfig);
     document.getElementById("saveFamily").addEventListener("click", saveProductSetup);
+    document.getElementById("reloadContent").addEventListener("click", reloadContent);
     document.getElementById("simulateBtn").addEventListener("click", runSimulation);
     document.getElementById("stickySpeak").addEventListener("click", sendSpeech);
     document.getElementById("stickySave").addEventListener("click", saveConfig);
@@ -3098,6 +3441,17 @@ async def handle_admin_connection(
             await writer.drain()
             return
 
+        if method == "GET" and parsed.path == "/onboarding":
+            writer.write(
+                make_http_response(
+                    "200 OK",
+                    render_onboarding_page().encode("utf-8"),
+                    content_type="text/html; charset=utf-8",
+                )
+            )
+            await writer.drain()
+            return
+
         if method == "GET" and parsed.path == "/manifest.webmanifest":
             writer.write(
                 make_http_response(
@@ -3106,6 +3460,11 @@ async def handle_admin_connection(
                     content_type="application/manifest+json; charset=utf-8",
                 )
             )
+            await writer.drain()
+            return
+
+        if method == "GET" and parsed.path == "/api/onboarding":
+            writer.write(make_json_response("200 OK", {"ok": True, "onboarding": onboarding_public_dict()}))
             await writer.drain()
             return
 
@@ -3140,6 +3499,16 @@ async def handle_admin_connection(
                 make_json_response(
                     "200 OK",
                     {"ok": True, "product": product_public_dict()},
+                )
+            )
+            await writer.drain()
+            return
+
+        if method == "POST" and parsed.path == "/api/reload-content":
+            writer.write(
+                make_json_response(
+                    "200 OK",
+                    {"ok": True, "product": reload_product_content()},
                 )
             )
             await writer.drain()

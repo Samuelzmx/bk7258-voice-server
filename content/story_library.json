@@ -1,0 +1,22 @@
+{
+  "forest_friends": {
+    "title": "Forest Friends",
+    "summary": "Gentle stories about animal friends helping each other in a bright forest.",
+    "prompt": "If telling a story, you may draw on a warm forest world with helpful animal friends and simple morals."
+  },
+  "space_scouts": {
+    "title": "Space Scouts",
+    "summary": "Imaginative stories about brave young explorers solving kind problems in space.",
+    "prompt": "If telling a story, you may use colorful space adventures that stay cozy, optimistic, and child-safe."
+  },
+  "everyday_bravery": {
+    "title": "Everyday Bravery",
+    "summary": "Stories about small acts of courage like trying new words, making friends, or asking questions.",
+    "prompt": "If telling a story, emphasize everyday courage, kindness, and trying again after mistakes."
+  },
+  "bedtime_breeze": {
+    "title": "Bedtime Breeze",
+    "summary": "Soft bedtime stories with quiet pacing and calm endings.",
+    "prompt": "If telling a bedtime story, use calm language, soft imagery, and a peaceful ending."
+  }
+}

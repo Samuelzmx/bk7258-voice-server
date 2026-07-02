@@ -19,6 +19,8 @@ Current server features:
 - selectable character presets like `companion`, `storyteller`, and `language_teacher`
 - family setup controls for toy name, child profile, safety mode, learning packs, and story library
 - optional parent access-code protection with `BK7258_PANEL_ACCESS_CODE`
+- phone onboarding page at `http://YOUR_MAC_IP:8766/onboarding`
+- structured content files in `content/` with live reload from the panel
 - direct `Send Speech` testing from the panel
 - backend latency simulation from the panel
 
@@ -210,6 +212,7 @@ Leave this window open.
 You can then open the control panel on the same Wi-Fi at:
 
 - `http://YOUR_MAC_IP:8766/`
+- onboarding handoff page: `http://YOUR_MAC_IP:8766/onboarding`
 
 Example:
 
@@ -218,6 +221,7 @@ Example:
 Phone tip:
 
 - open that URL on your phone
+- or first open the onboarding page and scan the QR code there
 - use `Add to Home Screen`
 - it will behave like a lightweight app for controlling the chip
 
@@ -268,6 +272,10 @@ These are the main files:
   This guide
 - `wss_server.py`
   The actual voice server
+- `content/learning_packs.json`
+  Structured learning-pack content that the server loads at runtime
+- `content/story_library.json`
+  Structured story-library content that the server loads at runtime
 - `WORKFLOW_STATUS.md`
   A short status and workflow summary
 - `setup_server.command`
@@ -305,10 +313,19 @@ This is the full runtime flow:
 How the phone control works:
 
 1. the phone opens the control panel from the Mac mini
-2. the panel calls the server API on port `8766`
-3. the server updates runtime config or queues speech
-4. the chip stays connected to the voice server on port `8765`
-5. the chip responds with the selected character and low-latency voice path
+2. or the parent opens `/onboarding` first and uses the QR/link handoff
+3. the panel calls the server API on port `8766`
+4. if panel protection is enabled, the parent enters the local access code first
+5. the server updates runtime config, product setup, or queues speech
+6. the chip stays connected to the voice server on port `8765`
+7. the chip responds with the selected character and low-latency voice path
+
+How the structured content works:
+
+1. `content/learning_packs.json` and `content/story_library.json` store the product content
+2. the server loads those files on boot
+3. the selected learning packs and story sets are injected into the system prompt
+4. the `Reload Content Files` button lets you refresh those JSON files without editing Python
 
 What the GitHub firmware build does:
 
