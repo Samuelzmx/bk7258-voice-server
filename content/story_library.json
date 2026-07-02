@@ -2,21 +2,33 @@
   "forest_friends": {
     "title": "Forest Friends",
     "summary": "Gentle stories about animal friends helping each other in a bright forest.",
-    "prompt": "If telling a story, you may draw on a warm forest world with helpful animal friends and simple morals."
+    "prompt": "If telling a story, you may draw on a warm forest world with helpful animal friends and simple morals.",
+    "age_bands": ["3-4", "5-6", "7-8"],
+    "goal_tags": ["bedtime", "kindness", "friendship"],
+    "topics": ["animals", "forest", "helping others"]
   },
   "space_scouts": {
     "title": "Space Scouts",
     "summary": "Imaginative stories about brave young explorers solving kind problems in space.",
-    "prompt": "If telling a story, you may use colorful space adventures that stay cozy, optimistic, and child-safe."
+    "prompt": "If telling a story, you may use colorful space adventures that stay cozy, optimistic, and child-safe.",
+    "age_bands": ["5-6", "7-8", "9-10"],
+    "goal_tags": ["storytelling", "curiosity", "imagination"],
+    "topics": ["space", "adventure", "problem solving"]
   },
   "everyday_bravery": {
     "title": "Everyday Bravery",
     "summary": "Stories about small acts of courage like trying new words, making friends, or asking questions.",
-    "prompt": "If telling a story, emphasize everyday courage, kindness, and trying again after mistakes."
+    "prompt": "If telling a story, emphasize everyday courage, kindness, and trying again after mistakes.",
+    "age_bands": ["5-6", "7-8", "9-10"],
+    "goal_tags": ["confidence", "resilience", "friendship"],
+    "topics": ["new situations", "school", "trying again"]
   },
   "bedtime_breeze": {
     "title": "Bedtime Breeze",
     "summary": "Soft bedtime stories with quiet pacing and calm endings.",
-    "prompt": "If telling a bedtime story, use calm language, soft imagery, and a peaceful ending."
+    "prompt": "If telling a bedtime story, use calm language, soft imagery, and a peaceful ending.",
+    "age_bands": ["3-4", "5-6", "7-8"],
+    "goal_tags": ["bedtime", "calm", "sleep"],
+    "topics": ["night", "calm breathing", "gentle imagery"]
   }
 }

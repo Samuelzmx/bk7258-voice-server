@@ -47,6 +47,7 @@ The current experimental product layer adds:
 - a fully local onboarding QR path
 - optional local parent access-code protection
 - persistent recent-turn and recent-session history for parents
+- age-aware content recommendations and parent-side content filtering
 
 These settings feed directly into the runtime system prompt so the toy can behave more like a real personalized product.
 
@@ -157,7 +158,7 @@ Ship a version that does not depend on manual local engineering steps.
 2. Move product work to a separate branch such as `product-beta-foundation`.
 3. Keep testing the family setup UI against the live chip workflow.
 4. Expand the parent dashboard beyond basic history into summaries and filters.
-5. Add age-tagged lesson and story catalogs on top of structured content.
+5. Add richer content metadata and retrieval beyond simple tag matching.
 6. Start separating product UI concerns from the single-file server implementation.
 
 ## Definition Of Success

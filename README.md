@@ -23,6 +23,8 @@ Current server features:
 - structured content files in `content/` with live reload from the panel
 - fully local QR generation at `http://YOUR_MAC_IP:8766/onboarding-qr.png`
 - recent turns, recent sessions, and average latency in the parent panel
+- content recommendations based on child age, interests, and parent goals
+- search and `recommended only` filtering for stories and learning packs
 - direct `Send Speech` testing from the panel
 - backend latency simulation from the panel
 
@@ -330,6 +332,7 @@ How the structured content works:
 2. the server loads those files on boot
 3. the selected learning packs and story sets are injected into the system prompt
 4. the `Reload Content Files` button lets you refresh those JSON files without editing Python
+5. `age_bands`, `goal_tags`, and `topics` let the panel suggest the best content for the current child profile
 
 How the parent activity history works:
 

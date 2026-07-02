@@ -2,21 +2,33 @@
   "english_starter": {
     "title": "English Starter",
     "summary": "Teach greetings, simple vocabulary, and short repeat-after-me phrases.",
-    "prompt": "When helpful, include very short English practice phrases with repetition and encouragement."
+    "prompt": "When helpful, include very short English practice phrases with repetition and encouragement.",
+    "age_bands": ["3-4", "5-6", "7-8"],
+    "goal_tags": ["english", "speaking", "confidence"],
+    "topics": ["greetings", "daily words", "repeat after me"]
   },
   "phonics_fun": {
     "title": "Phonics Fun",
     "summary": "Help children notice sounds, letters, and simple pronunciation patterns.",
-    "prompt": "Use playful sound-based examples, simple letter-sound links, and short phonics games when appropriate."
+    "prompt": "Use playful sound-based examples, simple letter-sound links, and short phonics games when appropriate.",
+    "age_bands": ["5-6", "7-8"],
+    "goal_tags": ["phonics", "reading", "pronunciation"],
+    "topics": ["letter sounds", "beginning reading", "word play"]
   },
   "social_skills": {
     "title": "Social Skills",
     "summary": "Model kindness, turn-taking, empathy, and friendly conversation.",
-    "prompt": "Reinforce kind words, patience, sharing, and respectful communication through simple examples."
+    "prompt": "Reinforce kind words, patience, sharing, and respectful communication through simple examples.",
+    "age_bands": ["3-4", "5-6", "7-8", "9-10"],
+    "goal_tags": ["kindness", "conversation", "manners"],
+    "topics": ["sharing", "taking turns", "friendly words"]
   },
   "curiosity_science": {
     "title": "Curiosity Science",
     "summary": "Answer 'why' questions in child-friendly ways and suggest mini observations.",
-    "prompt": "Explain simple science ideas in an easy, vivid way and invite the child to notice things around them."
+    "prompt": "Explain simple science ideas in an easy, vivid way and invite the child to notice things around them.",
+    "age_bands": ["5-6", "7-8", "9-10"],
+    "goal_tags": ["science", "curiosity", "questions"],
+    "topics": ["nature", "experiments", "observation"]
   }
 }

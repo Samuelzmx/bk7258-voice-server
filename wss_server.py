@@ -178,48 +178,75 @@ SAFETY_MODES = {
     "gentle": "Keep replies extra gentle, emotionally safe, and reassuring for young children.",
     "independent_reader": "Encourage curiosity and learning while still staying child-safe and easy to understand.",
 }
-DEFAULT_LEARNING_PACKS: dict[str, dict[str, str]] = {
+ContentCatalog = dict[str, dict[str, Any]]
+
+
+DEFAULT_LEARNING_PACKS: ContentCatalog = {
     "english_starter": {
         "title": "English Starter",
         "summary": "Teach greetings, simple vocabulary, and short repeat-after-me phrases.",
         "prompt": "When helpful, include very short English practice phrases with repetition and encouragement.",
+        "age_bands": ["3-4", "5-6", "7-8"],
+        "goal_tags": ["english", "speaking", "confidence"],
+        "topics": ["greetings", "daily words", "repeat after me"],
     },
     "phonics_fun": {
         "title": "Phonics Fun",
         "summary": "Help children notice sounds, letters, and simple pronunciation patterns.",
         "prompt": "Use playful sound-based examples, simple letter-sound links, and short phonics games when appropriate.",
+        "age_bands": ["5-6", "7-8"],
+        "goal_tags": ["phonics", "reading", "pronunciation"],
+        "topics": ["letter sounds", "beginning reading", "word play"],
     },
     "social_skills": {
         "title": "Social Skills",
         "summary": "Model kindness, turn-taking, empathy, and friendly conversation.",
         "prompt": "Reinforce kind words, patience, sharing, and respectful communication through simple examples.",
+        "age_bands": ["3-4", "5-6", "7-8", "9-10"],
+        "goal_tags": ["kindness", "conversation", "manners"],
+        "topics": ["sharing", "taking turns", "friendly words"],
     },
     "curiosity_science": {
         "title": "Curiosity Science",
         "summary": "Answer 'why' questions in child-friendly ways and suggest mini observations.",
         "prompt": "Explain simple science ideas in an easy, vivid way and invite the child to notice things around them.",
+        "age_bands": ["5-6", "7-8", "9-10"],
+        "goal_tags": ["science", "curiosity", "questions"],
+        "topics": ["nature", "experiments", "observation"],
     },
 }
-DEFAULT_STORY_LIBRARY: dict[str, dict[str, str]] = {
+DEFAULT_STORY_LIBRARY: ContentCatalog = {
     "forest_friends": {
         "title": "Forest Friends",
         "summary": "Gentle stories about animal friends helping each other in a bright forest.",
         "prompt": "If telling a story, you may draw on a warm forest world with helpful animal friends and simple morals.",
+        "age_bands": ["3-4", "5-6", "7-8"],
+        "goal_tags": ["bedtime", "kindness", "friendship"],
+        "topics": ["animals", "forest", "helping others"],
     },
     "space_scouts": {
         "title": "Space Scouts",
         "summary": "Imaginative stories about brave young explorers solving kind problems in space.",
         "prompt": "If telling a story, you may use colorful space adventures that stay cozy, optimistic, and child-safe.",
+        "age_bands": ["5-6", "7-8", "9-10"],
+        "goal_tags": ["storytelling", "curiosity", "imagination"],
+        "topics": ["space", "adventure", "problem solving"],
     },
     "everyday_bravery": {
         "title": "Everyday Bravery",
         "summary": "Stories about small acts of courage like trying new words, making friends, or asking questions.",
         "prompt": "If telling a story, emphasize everyday courage, kindness, and trying again after mistakes.",
+        "age_bands": ["5-6", "7-8", "9-10"],
+        "goal_tags": ["confidence", "resilience", "friendship"],
+        "topics": ["new situations", "school", "trying again"],
     },
     "bedtime_breeze": {
         "title": "Bedtime Breeze",
         "summary": "Soft bedtime stories with quiet pacing and calm endings.",
         "prompt": "If telling a bedtime story, use calm language, soft imagery, and a peaceful ending.",
+        "age_bands": ["3-4", "5-6", "7-8"],
+        "goal_tags": ["bedtime", "calm", "sleep"],
+        "topics": ["night", "calm breathing", "gentle imagery"],
     },
 }
 LEARNING_PACKS_PATH = CONTENT_DIR / "learning_packs.json"
@@ -410,11 +437,22 @@ def activity_public_dict() -> dict[str, Any]:
     }
 
 
-def clone_content_catalog(catalog: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+def clone_content_catalog(catalog: ContentCatalog) -> ContentCatalog:
     return {key: dict(value) for key, value in catalog.items()}
 
 
-def normalize_content_entry(entry_id: str, raw: Any) -> dict[str, str] | None:
+def normalize_string_sequence(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in cleaned:
+            cleaned.append(text)
+    return cleaned
+
+
+def normalize_content_entry(entry_id: str, raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     title = str(raw.get("title", "")).strip() or entry_id.replace("_", " ").title()
@@ -426,13 +464,20 @@ def normalize_content_entry(entry_id: str, raw: Any) -> dict[str, str] | None:
         "title": title,
         "summary": summary,
         "prompt": prompt,
+        "age_bands": [
+            age_band
+            for age_band in normalize_string_sequence(raw.get("age_bands"))
+            if age_band in CHILD_AGE_BANDS
+        ],
+        "goal_tags": normalize_string_sequence(raw.get("goal_tags")),
+        "topics": normalize_string_sequence(raw.get("topics")),
     }
 
 
 def load_content_catalog(
     path: Path,
-    fallback: dict[str, dict[str, str]],
-) -> dict[str, dict[str, str]]:
+    fallback: ContentCatalog,
+) -> ContentCatalog:
     if not path.exists():
         return clone_content_catalog(fallback)
     try:
@@ -443,7 +488,7 @@ def load_content_catalog(
     if not isinstance(payload, dict):
         logger.warning("content catalog at {} was not a JSON object", path)
         return clone_content_catalog(fallback)
-    normalized: dict[str, dict[str, str]] = {}
+    normalized: ContentCatalog = {}
     for entry_id, raw_entry in payload.items():
         key = str(entry_id).strip()
         if not key:
@@ -464,7 +509,7 @@ STORY_LIBRARY = load_content_catalog(STORY_LIBRARY_PATH, DEFAULT_STORY_LIBRARY)
 
 
 def default_selected_ids(
-    catalog: dict[str, dict[str, str]],
+    catalog: ContentCatalog,
     preferred: list[str],
 ) -> list[str]:
     selected = [entry_id for entry_id in preferred if entry_id in catalog]
@@ -549,6 +594,88 @@ def save_product_state() -> None:
         logger.warning("failed to save product state to {}: {}", PRODUCT_STATE_PATH, exc)
 
 
+def product_keyword_text() -> str:
+    return " ".join(
+        value.strip().lower()
+        for value in (
+            str(PRODUCT_STATE.get("child_interests", "")),
+            str(PRODUCT_STATE.get("parent_goals", "")),
+        )
+        if value.strip()
+    )
+
+
+def recommend_catalog_entries(
+    catalog: ContentCatalog,
+    *,
+    selected_ids: list[str],
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    age_band = str(PRODUCT_STATE.get("child_age_band", "")).strip()
+    keyword_text = product_keyword_text()
+    ranked: list[dict[str, Any]] = []
+    for entry_id, entry in catalog.items():
+        score = 0
+        reasons: list[str] = []
+        age_bands = list(entry.get("age_bands") or [])
+        goal_tags = list(entry.get("goal_tags") or [])
+        topics = list(entry.get("topics") or [])
+        if age_band and age_band in age_bands:
+            score += 3
+            reasons.append(f"age {age_band}")
+        goal_matches = [tag for tag in goal_tags if tag.lower() in keyword_text]
+        if goal_matches:
+            score += 2 * len(goal_matches[:2])
+            reasons.append("goals: " + ", ".join(goal_matches[:2]))
+        topic_matches = [topic for topic in topics if topic.lower() in keyword_text]
+        if topic_matches:
+            score += len(topic_matches[:2])
+            reasons.append("topics: " + ", ".join(topic_matches[:2]))
+        if entry_id in selected_ids:
+            score += 1
+            reasons.append("already selected")
+        if score <= 0 and not age_bands:
+            score = 1
+            reasons.append("general fit")
+        if score <= 0:
+            continue
+        ranked.append(
+            {
+                "id": entry_id,
+                "title": entry["title"],
+                "summary": entry["summary"],
+                "score": score,
+                "reasons": reasons,
+            }
+        )
+    ranked.sort(
+        key=lambda item: (
+            item["score"],
+            item["id"] in selected_ids,
+            item["title"],
+        ),
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
+def product_recommendations_dict() -> dict[str, Any]:
+    learning_recommendations = recommend_catalog_entries(
+        LEARNING_PACKS,
+        selected_ids=list(PRODUCT_STATE["active_learning_pack_ids"]),
+    )
+    story_recommendations = recommend_catalog_entries(
+        STORY_LIBRARY,
+        selected_ids=list(PRODUCT_STATE["active_story_ids"]),
+    )
+    return {
+        "learning_packs": learning_recommendations,
+        "learning_pack_ids": [item["id"] for item in learning_recommendations],
+        "story_library": story_recommendations,
+        "story_ids": [item["id"] for item in story_recommendations],
+    }
+
+
 def product_public_dict() -> dict[str, Any]:
     return {
         "setup": dict(PRODUCT_STATE),
@@ -556,6 +683,7 @@ def product_public_dict() -> dict[str, Any]:
         "safety_modes": SAFETY_MODES,
         "learning_packs": LEARNING_PACKS,
         "story_library": STORY_LIBRARY,
+        "recommendations": product_recommendations_dict(),
         "content_files": {
             "content_dir": str(CONTENT_DIR),
             "learning_packs_path": str(LEARNING_PACKS_PATH),
@@ -3007,6 +3135,11 @@ def render_control_panel() -> str:
       border: 1px solid rgba(15,118,110,0.14);
       background: rgba(255,255,255,0.9);
     }}
+    .option-card.recommended {{
+      border-color: rgba(180,83,9,0.38);
+      box-shadow: inset 0 0 0 1px rgba(180,83,9,0.16);
+      background: linear-gradient(180deg, rgba(255,248,233,0.98), rgba(255,255,255,0.94));
+    }}
     .option-card input {{
       width: auto;
       margin-right: 8px;
@@ -3021,6 +3154,36 @@ def render_control_panel() -> str:
       color: var(--soft);
       font-size: 0.86rem;
       line-height: 1.35;
+    }}
+    .meta-tags {{
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }}
+    .mini-tag {{
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(15,118,110,0.08);
+      color: var(--accent);
+      font-size: 0.76rem;
+      line-height: 1.2;
+    }}
+    .content-filter-row {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }}
+    .content-filter-row label {{
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 0;
+    }}
+    .content-filter-row input[type="checkbox"] {{
+      width: auto;
     }}
     .quick-grid {{
       display: grid;
@@ -3179,6 +3342,15 @@ def render_control_panel() -> str:
         <div id="recentSessions" class="activity-list"></div>
       </section>
       <section class="card section-stack">
+        <h2>Content Guide</h2>
+        <label for="contentSearch">Search stories and lessons</label>
+        <input id="contentSearch" placeholder="space, bedtime, English, kindness">
+        <div class="content-filter-row">
+          <label><input id="recommendedOnly" type="checkbox"> Show recommended only</label>
+        </div>
+        <div id="contentRecommendations"></div>
+      </section>
+      <section class="card section-stack">
         <h2>Learning Packs</h2>
         <div id="learningPackGrid" class="option-grid"></div>
         <p class="muted">These act like early curriculum packs for the toy and feed child-learning context into replies.</p>
@@ -3254,7 +3426,13 @@ def render_control_panel() -> str:
     const initialStatus = {initial_status};
   </script>
   <script>
-    const state = {{ status: initialStatus }};
+    const state = {{
+      status: initialStatus,
+      contentFilters: {{
+        search: "",
+        recommendedOnly: false,
+      }},
+    }};
 
     function showTransport(status) {{
       const transport = status.transport;
@@ -3317,19 +3495,66 @@ def render_control_panel() -> str:
       }}
     }}
 
-    function renderSelectableCards(containerId, items, selectedIds) {{
+    function recommendationMapFromList(items) {{
+      const map = {{}};
+      for (const item of (items || [])) {{
+        if (item && item.id) map[item.id] = item;
+      }}
+      return map;
+    }}
+
+    function contentMatchesSearch(item, searchText) {{
+      if (!searchText) return true;
+      const haystack = [
+        item.title,
+        item.summary,
+        ...(item.age_bands || []),
+        ...(item.goal_tags || []),
+        ...(item.topics || []),
+      ].join(" ").toLowerCase();
+      return haystack.includes(searchText);
+    }}
+
+    function renderSelectableCards(containerId, items, selectedIds, recommendationList) {{
       const container = document.getElementById(containerId);
       container.innerHTML = "";
+      const filters = state.contentFilters || {{}};
+      const searchText = String(filters.search || "").trim().toLowerCase();
+      const recommendedOnly = !!filters.recommendedOnly;
+      const recommendationMap = recommendationMapFromList(recommendationList);
+      let rendered = 0;
       for (const [key, item] of Object.entries(items || {{}})) {{
+        const recommended = !!recommendationMap[key];
+        if (recommendedOnly && !recommended) {{
+          continue;
+        }}
+        if (!contentMatchesSearch(item, searchText)) {{
+          continue;
+        }}
         const label = document.createElement("label");
-        label.className = "option-card";
+        label.className = "option-card" + (recommended ? " recommended" : "");
+        const tags = [
+          ...(recommended && recommendationMap[key].reasons?.length
+            ? [`Recommended: ${{recommendationMap[key].reasons[0]}}`]
+            : []),
+          ...((item.age_bands || []).map((age) => `Age ${{age}}`)),
+          ...((item.goal_tags || []).slice(0, 2)),
+          ...((item.topics || []).slice(0, 2)),
+        ];
         label.innerHTML = `
           <strong><input type="checkbox" value="${{key}}" ${{
             selectedIds.includes(key) ? "checked" : ""
           }}> ${{item.title}}</strong>
           <span>${{item.summary}}</span>
+          <div class="meta-tags">${{
+            tags.map((tag) => `<span class="mini-tag">${{tag}}</span>`).join("")
+          }}</div>
         `;
         container.appendChild(label);
+        rendered += 1;
+      }}
+      if (!rendered) {{
+        container.innerHTML = '<div class="activity-item"><span>No content matched the current filter.</span></div>';
       }}
     }}
 
@@ -3337,6 +3562,21 @@ def render_control_panel() -> str:
       return Array.from(
         document.querySelectorAll(`#${{containerId}} input[type="checkbox"]:checked`)
       ).map((node) => node.value);
+    }}
+
+    function renderContentRecommendations(product) {{
+      const recommendations = product.recommendations || {{}};
+      const learning = recommendations.learning_packs || [];
+      const stories = recommendations.story_library || [];
+      const box = document.getElementById("contentRecommendations");
+      box.innerHTML = `
+        <span class="pill">Suggested lessons: ${{
+          learning.map((item) => item.title).join(", ") || "none yet"
+        }}</span>
+        <span class="pill">Suggested stories: ${{
+          stories.map((item) => item.title).join(", ") || "none yet"
+        }}</span>
+      `;
     }}
 
     function populateProduct(status) {{
@@ -3366,15 +3606,20 @@ def render_control_panel() -> str:
       document.getElementById("childName").value = setup.child_name || "";
       document.getElementById("childInterests").value = setup.child_interests || "";
       document.getElementById("parentGoals").value = setup.parent_goals || "";
+      document.getElementById("contentSearch").value = state.contentFilters.search || "";
+      document.getElementById("recommendedOnly").checked = !!state.contentFilters.recommendedOnly;
+      renderContentRecommendations(product);
       renderSelectableCards(
         "learningPackGrid",
         product.learning_packs || {{}},
         setup.active_learning_pack_ids || [],
+        product.recommendations?.learning_packs || [],
       );
       renderSelectableCards(
         "storyLibraryGrid",
         product.story_library || {{}},
         setup.active_story_ids || [],
+        product.recommendations?.story_library || [],
       );
     }}
 
@@ -3563,10 +3808,18 @@ def render_control_panel() -> str:
       }}
     }}
 
+    function updateContentFilters() {{
+      state.contentFilters.search = document.getElementById("contentSearch").value;
+      state.contentFilters.recommendedOnly = document.getElementById("recommendedOnly").checked;
+      populateProduct(state.status);
+    }}
+
     document.getElementById("speakBtn").addEventListener("click", sendSpeech);
     document.getElementById("saveConfig").addEventListener("click", saveConfig);
     document.getElementById("saveFamily").addEventListener("click", saveProductSetup);
     document.getElementById("reloadContent").addEventListener("click", reloadContent);
+    document.getElementById("contentSearch").addEventListener("input", updateContentFilters);
+    document.getElementById("recommendedOnly").addEventListener("change", updateContentFilters);
     document.getElementById("simulateBtn").addEventListener("click", runSimulation);
     document.getElementById("stickySpeak").addEventListener("click", sendSpeech);
     document.getElementById("stickySave").addEventListener("click", saveConfig);
