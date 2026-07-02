@@ -1,371 +1,135 @@
-# bk7258-voice-server
+# BK7258 AI Toy - Voice Server
 
-This is the shortest working setup.
-
-Goal:
-
-1. start the server on your Mac
-2. build firmware with your Mac IP and your Wi-Fi
-3. flash the chip
-4. talk to the chip
-
-Current server features:
-
-- low-latency local TTS by default, with Deepgram fallback
-- browser control panel at `http://YOUR_MAC_IP:8766/`
-- phone-first control panel with quick mode buttons and sticky actions
-- selectable LLM provider in the panel: `Anthropic` or `OpenAI`
-- paste the selected provider API key directly in the panel
-- selectable character presets like `companion`, `storyteller`, and `language_teacher`
-- family setup controls for toy name, child profile, safety mode, learning packs, and story library
-- optional parent access-code protection with `BK7258_PANEL_ACCESS_CODE`
-- phone onboarding page at `http://YOUR_MAC_IP:8766/onboarding`
-- structured content files in `content/` with live reload from the panel
-- fully local QR generation at `http://YOUR_MAC_IP:8766/onboarding-qr.png`
-- recent turns, recent sessions, and average latency in the parent panel
-- content recommendations based on child age, interests, and parent goals
-- search and `recommended only` filtering for stories and learning packs
-- direct `Send Speech` testing from the panel
-- backend latency simulation from the panel
+Pipeline: Chip mic -> WebSocket -> Deepgram STT -> selectable LLM -> low-latency TTS -> OPUS/PCM -> Chip speaker
 
 Product planning docs:
-
 - `PRODUCT_BLUEPRINT.md`
 - `PRODUCT_EXECUTION_PLAN.md`
 
-## What you need
-
-- 1 MacBook
-- 1 BK7258 / Agora R1 board
-- 1 USB cable
-- 1 Wi-Fi network
-- 1 GitHub account
-- `DEEPGRAM_API_KEY`
-- `ANTHROPIC_API_KEY`
-- optional `OPENAI_API_KEY`
-- optional `BK7258_PANEL_ACCESS_CODE`
-
-## What to download
-
-On your Mac, download:
-
-1. Python 3.13
-   [python.org/downloads/macos](https://www.python.org/downloads/macos/)
-2. VS Code
-   [code.visualstudio.com/Download](https://code.visualstudio.com/Download)
-3. The Beken flashing tool `BKFIL`
-   - Feishu guide download step for Windows:
-     open [https://dl.bekencorp.com/tools/flash](https://dl.bekencorp.com/tools/flash), download `BEKEN_BKFIL_V2.1.11.15_20241114`, unzip it, and open `BKFIL`
-   - For this Mac setup:
-     get `BKFIL_macos_4.0.1.25123002` from the project owner, unzip it, and open `bkfil.app`
-
-## Step 1: Download this repo
-
-1. Open the repo website on GitHub.
-2. Click the green `Code` button.
-3. Copy the repo URL.
-4. Open VS Code.
-5. Press `Command + Shift + P`.
-6. Type `Git: Clone`.
-7. Paste the repo URL.
-8. Choose a folder on your Mac.
-9. Click `Open` when VS Code asks to open the cloned repo.
-
-If your Mac says Git or Command Line Tools are missing:
-
-1. Click `Install`.
-2. Wait for the install to finish.
-3. Open VS Code again.
-4. Repeat Step 1.
-
-## Step 2: Set up the server
-
-1. Open the repo folder in Finder.
-2. Double-click `setup_server.command`.
-
-If macOS blocks it:
-
-1. Right-click `setup_server.command`.
-2. Click `Open`.
-3. Click `Open` again.
-
-Important:
-
-- use Python `3.13`
-- do not use Python `3.14` for this project
-
-## Step 3: Add your API keys
-
-1. Copy `.env.example`.
-2. Rename the copy to `.env`.
-3. Open `.env` in VS Code.
-4. Paste this:
-
-```env
-DEEPGRAM_API_KEY=your_deepgram_api_key_here
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-OPENAI_API_KEY=your_openai_api_key_here
-```
-
-5. Save the file.
-
-You can also leave the OpenAI key out of `.env` and paste it later in the control panel.
-The panel can hold provider API keys in server memory until restart.
-
-For testers:
-
-- keep the GitHub repo version generic
-- get the real API keys directly from the project owner
-- get the BKFIL package directly from the project owner
-
-## Step 4: Find your Mac IP address
-
-1. Click the Apple menu.
-2. Click `System Settings`.
-3. Click `Wi-Fi`.
-4. Click `Details` next to your Wi-Fi.
-5. Click `TCP/IP`.
-6. Find `IPv4 Address`.
-
-Example:
-
-- `192.168.1.23`
-
-You need this number in Step 6.
-
-## Step 5: Find your Wi-Fi name and password
-
-You need:
-
-- your Wi-Fi name
-- your Wi-Fi password
-
-Your Wi-Fi name is the one your Mac is currently connected to.
-
-## Step 6: Build the firmware on GitHub
-
-1. Open this repo on GitHub.
-2. Click the `Actions` tab.
-3. Click `Build BK7258 Firmware`.
-4. Click `Run workflow`.
-5. Fill in:
-   - `server_ip`
-     Put your Mac IP from Step 4
-   - `wifi_ssid`
-     Put your Wi-Fi name from Step 5
-   - `wifi_password`
-     Put your Wi-Fi password from Step 5
-   - `disable_countdown`
-     Leave it as `true`
-6. Click the green `Run workflow` button.
-
-## Step 7: Download the firmware file
-
-1. Wait for the workflow to finish.
-2. Open that workflow run.
-3. Scroll down to `Artifacts`.
-4. Download `bk7258-firmware`.
-5. Unzip it.
-
-The file you need is:
-
-- `all-app.bin`
-
-## Step 8: Flash the chip
-
-1. Plug the chip into your Mac with USB.
-2. If you are on Windows and want the same BKFIL download step shown in Feishu:
-   - open [https://dl.bekencorp.com/tools/flash](https://dl.bekencorp.com/tools/flash)
-   - download `BEKEN_BKFIL_V2.1.11.15_20241114`
-   - unzip it
-   - open `BKFIL`
-3. If you are on Mac:
-   - get `BKFIL_macos_4.0.1.25123002` from the project owner
-   - unzip it
-   - open `bkfil.app`
-4. Hold `BOOT`.
-5. Tap `RST` once.
-6. Release `BOOT`.
-7. In BKFIL:
-   - choose the serial port
-   - add `all-app.bin`
-   - set start address to `0x0`
-   - set link type to `BOOTROM`
-   - set baud rate to `1500000`
-   - turn `Erase before download` ON
-   - turn `Reboot after download` ON
-8. Click `Download`.
-
-Expected success message:
-
-- `Download complete, all pass.`
-
-## Step 9: Start the server
-
-1. Go back to the repo folder.
-2. Double-click `start_server.command`.
-
-If macOS blocks it:
-
-1. Right-click `start_server.command`.
-2. Click `Open`.
-3. Click `Open` again.
-
-Leave this window open.
-
-You can then open the control panel on the same Wi-Fi at:
-
-- `http://YOUR_MAC_IP:8766/`
-- onboarding handoff page: `http://YOUR_MAC_IP:8766/onboarding`
-
-Example:
-
-- `http://10.0.0.62:8766/`
-
-Phone tip:
-
-- open that URL on your phone
-- or first open the onboarding page and scan the QR code there
-- use `Add to Home Screen`
-- it will behave like a lightweight app for controlling the chip
-
-## Step 10: Power on the chip
-
-1. Power on the chip.
-2. Wait for it to connect.
-
-Expected result:
-
-- the server window shows a chip connection
-- the control panel can show the chip connection
-- the chip may stay quiet on connect because startup greeting is disabled by default for better stability
-
-## Step 11: Talk to the chip
-
-1. Speak to the chip normally.
-2. Wait a moment.
-3. The chip should answer back.
-
-If you want to test server to chip audio first:
-
-1. open the control panel
-2. use `Send Speech`
-3. the chip should speak that text out loud
-
-If processing takes a moment:
-
-- the chip can say `One moment.` first
-- then it speaks the real reply
-
-## Step 12: Use your phone as the remote control
-
-1. Make sure your phone is on the same Wi-Fi as the Mac and the chip.
-2. Open `http://YOUR_MAC_IP:8766/` on your phone.
-3. Tap `Quick Modes` to switch the chip personality.
-4. Tap `Quick Speech` to send instant test phrases.
-5. Use the bottom sticky buttons to save the mode or send typed speech.
-6. If you want a different LLM provider, choose the provider, fill in the model name, paste that provider API key, and tap `Save Mode`.
-
-This is the easiest version of a phone app for the chip.
-
-## Project structure
-
-These are the main files:
-
-- `README.md`
-  This guide
-- `wss_server.py`
-  The actual voice server
+Current control panel features:
+- switch LLM provider between `Anthropic` and `OpenAI`
+- set Anthropic and OpenAI model names in the panel
+- paste Anthropic or OpenAI API keys directly in the panel
+- switch TTS backend between `auto`, `local`, and `Deepgram`
+- choose character presets like `companion`, `storyteller`, and `language_teacher`
+- optionally protect the control panel with `BK7258_PANEL_ACCESS_CODE`
+- open a phone-friendly onboarding page at `/onboarding`
+- generate the onboarding QR locally on the Mac mini
+- send direct speech to the chip
+- run backend latency simulation from the browser
+- see whether the panel is `LAN` or `local-only`
+- use a phone-first control surface with quick mode buttons and quick speech buttons
+- add the panel to a phone home screen like a lightweight app
+- reload structured content files without editing Python code
+- show recent turns, recent sessions, and average latency in the parent panel
+- recommend stories and learning packs based on child age, interests, and parent goals
+- filter content in the panel with search and `recommended only`
+- tighter low-latency defaults: shorter replies, shorter LLM history, and faster server-side VAD turn cutting
+
+## Hardware
+- Agora R1 / BK7258 chip
+- Chip IP: 10.0.0.150
+- Mac Mini IP: 10.0.0.62 (server)
+- Server port: 8765
+
+## Setup
+
+1. Install system dependency (one time):
+   `brew install opus`
+
+2. Create virtualenv and install deps:
+   `uv venv --python python3.14`
+   `uv pip install opuslib requests python-dotenv loguru`
+
+3. Copy `.env.example` to `.env` and fill in API keys:
+   `cp .env.example .env`
+
+   Required:
+   - `DEEPGRAM_API_KEY`
+   - `ANTHROPIC_API_KEY`
+
+   Optional:
+   - `OPENAI_API_KEY`
+   - `BK7258_PANEL_ACCESS_CODE`
+
+   You can also leave `OPENAI_API_KEY` out of `.env` and paste it later in the control panel.
+   The panel can override the LLM API key in memory until the server restarts.
+
+4. Start server:
+   `./start_server.sh`
+
+5. Open the control panel:
+   `http://YOUR_MAC_IP:8766/`
+
+   Example on this setup:
+   `http://10.0.0.62:8766/`
+
+   Note:
+   - if admin host is `0.0.0.0`, the panel is reachable from other devices on the same Wi-Fi
+   - it is not public internet access unless you add your own tunnel, VPN, or port forwarding
+   - on iPhone or Android, open this URL in the browser and use `Add to Home Screen` for app-like use
+
+## Firmware
+- Project: `beken_wss` (not `beken_genie`)
+- Repo: `~/armino/bk_aidk`, branch `ai_release/v2.0.1`
+- Build: `make bk7258 PROJECT=beken_wss`
+- Binary: `build/beken_wss/bk7258/all-app.bin`
+- Flash: `BKFIL` macOS app
+
+## Protocol (NOPSRAM WebSocket)
+The chip speaks an OpenAI Realtime API-like protocol over raw WebSocket:
+
+1. Chip -> `hello {interact_mode:4}` -> Server -> `hello_response {code:200}`
+2. Chip -> `session.update` -> Server -> `session.updated` + greeting audio
+3. Chip sends binary OPUS frames (16 kHz mic) + `input_audio_buffer.commit`
+4. Server -> `input_audio_buffer.committed` (must be immediate or chip reconnects)
+5. Chip -> `response.create` -> Server -> STT + LLM + TTS -> OPUS audio frames
+
+## Character Modes
+- `companion`: default playful toy voice
+- `storyteller`: concise story-focused behavior
+- `language_teacher`: gentle correction and short teaching examples
+- `curious_friend`: question-driven conversational mode
+- `bedtime_guide`: soft, calming replies
+
+## Phone Control
+- open the control panel from a phone on the same Wi-Fi
+- open `http://YOUR_MAC_IP:8766/onboarding` for the parent handoff page
+- use `Quick Modes` for one-tap personality switching
+- use `Quick Speech` to make the chip speak without typing long text
+- use the sticky buttons at the bottom of the phone screen for fast control
+- choose a provider, model name, and paste that provider's API key directly in the panel
+- use the family setup area to shape the toy for a specific child, goals, safety mode, story set, and learning packs
+
+## Structured Content
 - `content/learning_packs.json`
-  Structured learning-pack content that the server loads at runtime
 - `content/story_library.json`
-  Structured story-library content that the server loads at runtime
-- `activity_state.json`
-  Saved recent turns and recent sessions for the parent dashboard
-- `WORKFLOW_STATUS.md`
-  A short status and workflow summary
-- `setup_server.command`
-  Double-click this once to set up Python and install packages
-- `start_server.command`
-  Double-click this to start the server
-- `.github/workflows/build-bk7258-firmware.yml`
-  GitHub button that builds firmware with your Mac IP and Wi‑Fi
-- `scripts/prepare_bk_aidk.py`
-  Helper that copies the known-good BK7258 firmware overlay and then edits your server IP and Wi‑Fi before build
-- `firmware/overlay/`
-  The tested BK AIDK firmware files copied from the working local firmware tree
-- `.env`
-  Your API keys
+- use the `Reload Content Files` button in the panel after editing these JSON files
+- the server injects the selected packs and stories into the runtime prompt, which is the current product step before full RAG
+- each content item can now include:
+  - `age_bands`
+  - `goal_tags`
+  - `topics`
+- the panel uses that metadata to suggest the best packs and stories for the current child profile
 
-## How everything works
+## Activity History
+- recent activity is persisted to `activity_state.json`
+- the control panel shows recent turns and recent sessions from that file
+- the activity API is `GET /api/activity`
+- you can change the path with `BK7258_ACTIVITY_STATE_PATH`
 
-This is the full runtime flow:
+## Product Paths
+- parent panel: `http://YOUR_MAC_IP:8766/`
+- onboarding page: `http://YOUR_MAC_IP:8766/onboarding`
+- onboarding QR image: `http://YOUR_MAC_IP:8766/onboarding-qr.png`
+- auth endpoint: `POST /api/auth`
+- onboarding data: `GET /api/onboarding`
+- content reload: `POST /api/reload-content`
 
-1. The chip connects to your Wi‑Fi.
-2. The chip connects to your Mac at `ws://your-mac-ip:8765`.
-3. The server answers the chip handshake.
-4. The server sends startup audio to the chip.
-5. The chip plays the audio.
-6. You speak to the chip.
-7. The chip sends microphone audio to `wss_server.py`.
-8. `wss_server.py` sends that audio to Deepgram for speech-to-text.
-9. The text goes to the selected LLM provider:
-   - Anthropic
-   - or OpenAI, if `OPENAI_API_KEY` is configured
-10. The reply goes to local macOS TTS first by default, with Deepgram fallback.
-11. The server sends the reply audio back to the chip.
-12. The chip speaks the reply.
-
-How the phone control works:
-
-1. the phone opens the control panel from the Mac mini
-2. or the parent opens `/onboarding` first and uses the QR/link handoff
-3. the panel calls the server API on port `8766`
-4. if panel protection is enabled, the parent enters the local access code first
-5. the server updates runtime config, product setup, queues speech, and stores recent activity
-6. the chip stays connected to the voice server on port `8765`
-7. the chip responds with the selected character and low-latency voice path
-
-How the structured content works:
-
-1. `content/learning_packs.json` and `content/story_library.json` store the product content
-2. the server loads those files on boot
-3. the selected learning packs and story sets are injected into the system prompt
-4. the `Reload Content Files` button lets you refresh those JSON files without editing Python
-5. `age_bands`, `goal_tags`, and `topics` let the panel suggest the best content for the current child profile
-
-How the parent activity history works:
-
-1. the server stores recent turns and recent sessions in `activity_state.json`
-2. the control panel reads that history into `Recent Turns` and `Recent Sessions`
-3. the summary shows average saved turn latency for quick parent-facing status
-
-What the GitHub firmware build does:
-
-1. takes your Mac IP
-2. takes your Wi‑Fi name
-3. takes your Wi‑Fi password
-4. copies the tested BK7258 firmware overlay
-5. puts your Mac IP into the firmware
-6. puts your Wi‑Fi name and password into the firmware fallback
-7. builds `all-app.bin`
-8. gives you the exact file to flash
-
-What the server needs to work:
-
-- your Mac and chip must be on the same Wi‑Fi
-- the chip firmware must contain the correct Mac IP
-- `.env` must contain `DEEPGRAM_API_KEY` and `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY` is only needed if you want to switch the panel to OpenAI
-- `start_server.command` must be running
-- the control panel is LAN-accessible by default, not public internet accessible
-
-## If you want to force a test sentence
-
-Open Terminal in the repo folder and run:
-
-```bash
-curl -G --data-urlencode "text=Hello this is a test from the server" http://127.0.0.1:8766/speak
-```
-
-The chip should say that sentence out loud.
+## Low Latency Mode
+- default TTS mode is `auto`, which tries local macOS speech first for much faster replies
+- if local speech is unavailable, the server falls back to Deepgram TTS
+- a short processing prompt can be enabled so the chip says `One moment.` instead of staying silent
+- the server now trims LLM history before each request to reduce response time
+- the server now forces spoken replies to stay short and plain so LLM + TTS stay faster
+- the server now cuts PCM turns more aggressively with faster VAD silence and minimum-speech settings

@@ -48,6 +48,7 @@ The current experimental product layer adds:
 - optional local parent access-code protection
 - persistent recent-turn and recent-session history for parents
 - age-aware content recommendations and parent-side content filtering
+- latency-focused defaults for shorter replies, shorter LLM context, and faster turn commit
 
 These settings feed directly into the runtime system prompt so the toy can behave more like a real personalized product.
 

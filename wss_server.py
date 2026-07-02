@@ -19,12 +19,14 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import struct
 import subprocess
 import tempfile
 import time
+import unicodedata
 from urllib.parse import parse_qs, urlsplit
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
@@ -93,7 +95,7 @@ DEFAULT_TTS_BACKEND = os.getenv("BK7258_TTS_BACKEND", "auto").strip().lower() or
 
 SYSTEM_PROMPT = (
     "You are Dawn, a friendly AI voice toy companion. Keep responses short "
-    "(1-3 sentences). They will be spoken aloud."
+    "(1-2 short sentences). They will be spoken aloud. Use plain spoken text only."
 )
 GREETING_TEXT = (
     "Hello Samuel. This is the BK seven two five eight test server speaking. "
@@ -135,10 +137,17 @@ MIN_RESPONSE_AUDIO_DONE_DELAY_SEC = 0.05
 PROCESSING_PROMPT_DELAY_SEC = 0.35
 PCM_VAD_START_THRESHOLD = 900
 PCM_VAD_CONTINUE_THRESHOLD = 600
-PCM_VAD_SILENCE_MS = 450
-PCM_VAD_MIN_SPEECH_MS = 220
-PCM_VAD_MAX_UTTERANCE_MS = 8000
+PCM_VAD_SILENCE_MS = 240
+PCM_VAD_MIN_SPEECH_MS = 140
+PCM_VAD_MAX_UTTERANCE_MS = 5000
 PCM_IGNORE_AFTER_PLAYBACK_MS = 250
+DEFAULT_LLM_HISTORY_MESSAGES = int(os.getenv("BK7258_LLM_HISTORY_MESSAGES", "4"))
+DEFAULT_REPLY_SENTENCE_LIMIT = int(os.getenv("BK7258_REPLY_SENTENCE_LIMIT", "2"))
+STORY_REPLY_SENTENCE_LIMIT = int(os.getenv("BK7258_STORY_REPLY_SENTENCE_LIMIT", "2"))
+DEFAULT_REPLY_WORD_LIMIT = int(os.getenv("BK7258_REPLY_WORD_LIMIT", "24"))
+STORY_REPLY_WORD_LIMIT = int(os.getenv("BK7258_STORY_REPLY_WORD_LIMIT", "40"))
+DEFAULT_LLM_MAX_TOKENS = int(os.getenv("BK7258_LLM_MAX_TOKENS", "64"))
+STORY_LLM_MAX_TOKENS = int(os.getenv("BK7258_STORY_LLM_MAX_TOKENS", "84"))
 
 HEAD_MAGIC = 0xF0D5
 HEAD_FLAGS = 0x0001
@@ -148,22 +157,22 @@ PROMPT_PCM_CACHE: dict[str, bytes] = {}
 CHARACTER_PRESETS: dict[str, str] = {
     "companion": (
         "You are Dawn, a friendly AI voice toy companion. Keep responses short, warm, playful, "
-        "and easy to understand when spoken aloud."
+        "and easy to understand when spoken aloud. Use plain spoken text only, no markdown, no headings, and no emoji."
     ),
     "storyteller": (
         "You are Dawn the storyteller. Tell child-friendly stories with vivid but simple language, "
-        "clear structure, and gentle energy. Keep spoken replies concise unless the user asks for a longer story."
+        "clear structure, and gentle energy. Tell only a very short scene per turn, then pause. Use plain spoken text only, with no markdown or emoji."
     ),
     "language_teacher": (
         "You are Dawn the language teacher. Speak clearly, teach with short examples, gently correct mistakes, "
-        "and encourage the learner. Keep spoken replies compact and practical."
+        "and encourage the learner. Keep spoken replies compact and practical. Use plain spoken text only, no markdown, no emoji."
     ),
     "curious_friend": (
         "You are Dawn the curious friend. Be upbeat, ask engaging follow-up questions, and celebrate curiosity "
-        "without talking for too long."
+        "without talking for too long. Use plain spoken text only, no markdown, no emoji."
     ),
     "bedtime_guide": (
-        "You are Dawn the bedtime guide. Speak softly, calmly, and reassuringly, with cozy wording and very brief replies."
+        "You are Dawn the bedtime guide. Speak softly, calmly, and reassuringly, with cozy wording and very brief replies. Use plain spoken text only, no markdown, no emoji."
     ),
 }
 PRODUCT_STATE_PATH = Path(
@@ -816,6 +825,10 @@ def effective_system_prompt() -> str:
         f"Your toy name is {device_name}.",
         f"You are talking to a child named {child_name} in the age band {age_band}.",
         safety_prompt,
+        (
+            "Response rules: use plain spoken text only. No markdown, no bullet lists, no headings, and no emoji. "
+            "Default to 1 or 2 short sentences. If the child asks for a story, tell only one very short scene in up to 2 short sentences, then stop."
+        ),
     ]
     if interests:
         sections.append(f"Child interests: {interests}.")
@@ -1462,9 +1475,111 @@ def transcribe_pcm(pcm_bytes: bytes) -> str:
     )
 
 
+def trim_history_for_llm(history: list[dict[str, str]]) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    for item in history:
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            cleaned.append({"role": role, "content": content})
+    if DEFAULT_LLM_HISTORY_MESSAGES <= 0:
+        return []
+    return cleaned[-DEFAULT_LLM_HISTORY_MESSAGES:]
+
+
+def wants_story_reply(user_text: str) -> bool:
+    lowered = user_text.strip().lower()
+    if not lowered:
+        return False
+    story_keywords = (
+        "story",
+        "bedtime",
+        "once upon",
+        "tale",
+        "adventure",
+    )
+    if any(keyword in lowered for keyword in story_keywords):
+        return True
+    return RUNTIME_CONFIG.character_preset in {"storyteller", "bedtime_guide"}
+
+
+def llm_max_tokens_for_request(user_text: str) -> int:
+    if wants_story_reply(user_text):
+        return STORY_LLM_MAX_TOKENS
+    return DEFAULT_LLM_MAX_TOKENS
+
+
+def spoken_sentence_limit(user_text: str) -> int:
+    if wants_story_reply(user_text):
+        return STORY_REPLY_SENTENCE_LIMIT
+    return DEFAULT_REPLY_SENTENCE_LIMIT
+
+
+def spoken_word_limit(user_text: str) -> int:
+    if wants_story_reply(user_text):
+        return STORY_REPLY_WORD_LIMIT
+    return DEFAULT_REPLY_WORD_LIMIT
+
+
+def strip_unspoken_symbols(text: str) -> str:
+    return "".join(
+        ch for ch in text if unicodedata.category(ch) not in {"So", "Cs"}
+    )
+
+
+def collapse_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def strip_markdown_for_speech(text: str) -> str:
+    text = text.replace("\r", "\n")
+    text = re.sub(r"\[(.*?)\]\((.*?)\)", r"\1", text)
+    text = re.sub(r"(^|\n)\s{0,3}#{1,6}\s*", r"\1", text)
+    text = re.sub(r"(^|\n)\s*[-*]\s+", r"\1", text)
+    text = re.sub(r"[`*_~]", "", text)
+    return text
+
+
+def limit_sentences(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+    if not sentences:
+        return text.strip()
+    return " ".join(sentences[:limit]).strip()
+
+
+def limit_words(text: str, limit: int) -> str:
+    words = text.split()
+    if limit <= 0 or len(words) <= limit:
+        return text
+    trimmed = " ".join(words[:limit]).rstrip(",;:-")
+    trailing_fillers = {"and", "but", "so", "because", "then", "or"}
+    while trimmed:
+        last_word = trimmed.split()[-1].strip(".,!?;:").lower()
+        if last_word not in trailing_fillers:
+            break
+        trimmed = " ".join(trimmed.split()[:-1]).rstrip(",;:-")
+    if trimmed and trimmed[-1] not in ".!?":
+        trimmed += "."
+    return trimmed
+
+
+def finalize_spoken_reply(text: str, user_text: str) -> str:
+    text = strip_markdown_for_speech(text)
+    text = strip_unspoken_symbols(text)
+    text = collapse_whitespace(text)
+    text = limit_sentences(text, spoken_sentence_limit(user_text))
+    text = limit_words(text, spoken_word_limit(user_text))
+    text = collapse_whitespace(text)
+    return text or "Sorry, I had a problem. Try again."
+
+
 def ask_anthropic(user_text: str, history: list[dict[str, str]]) -> str:
     """Generate a short assistant reply with Anthropic."""
     api_key = get_provider_api_key("anthropic")
+    trimmed_history = trim_history_for_llm(history)
     try:
         response = requests.post(
             ANTHROPIC_MESSAGES_URL,
@@ -1475,9 +1590,9 @@ def ask_anthropic(user_text: str, history: list[dict[str, str]]) -> str:
             },
             json={
                 "model": RUNTIME_CONFIG.anthropic_model,
-                "max_tokens": 200,
+                "max_tokens": llm_max_tokens_for_request(user_text),
                 "system": effective_system_prompt(),
-                "messages": history + [{"role": "user", "content": user_text}],
+                "messages": trimmed_history + [{"role": "user", "content": user_text}],
             },
             timeout=15,
         )
@@ -1495,7 +1610,7 @@ def ask_anthropic(user_text: str, history: list[dict[str, str]]) -> str:
 
     payload = response.json()
     try:
-        return payload["content"][0]["text"].strip()
+        return finalize_spoken_reply(payload["content"][0]["text"].strip(), user_text)
     except (KeyError, IndexError, TypeError):
         logger.warning("Anthropic response shape was unexpected: {}", payload)
         return "Sorry, I had a problem. Try again."
@@ -1505,6 +1620,7 @@ def build_openai_messages(
     user_text: str,
     history: list[dict[str, str]],
 ) -> list[dict[str, Any]]:
+    history = trim_history_for_llm(history)
     messages: list[dict[str, Any]] = [
         {
             "role": "developer",
@@ -1560,6 +1676,7 @@ def ask_openai(user_text: str, history: list[dict[str, str]]) -> str:
             json={
                 "model": RUNTIME_CONFIG.openai_model,
                 "input": build_openai_messages(user_text, history),
+                "max_output_tokens": llm_max_tokens_for_request(user_text),
             },
             timeout=15,
         )
@@ -1578,7 +1695,7 @@ def ask_openai(user_text: str, history: list[dict[str, str]]) -> str:
     payload = response.json()
     text = extract_openai_output_text(payload)
     if text:
-        return text
+        return finalize_spoken_reply(text, user_text)
     logger.warning("OpenAI response shape was unexpected: {}", payload)
     return "Sorry, I had a problem. Try again."
 
