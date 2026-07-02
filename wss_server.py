@@ -60,8 +60,8 @@ from loguru import logger
 
 load_dotenv(Path(__file__).with_name(".env"))
 
-PORT = 8765
-HOST = "0.0.0.0"
+PORT = int(os.getenv("BK7258_PORT", "8765"))
+HOST = os.getenv("BK7258_HOST", "0.0.0.0").strip() or "0.0.0.0"
 CHIP_ENDPOINT = os.getenv("BK7258_CHIP_ENDPOINT", "ws://10.0.0.62:8765").strip()
 ADMIN_HOST = os.getenv("BK7258_ADMIN_HOST", "0.0.0.0").strip() or "0.0.0.0"
 ADMIN_PORT = int(os.getenv("BK7258_ADMIN_PORT", "8766"))
@@ -150,6 +150,73 @@ CHARACTER_PRESETS: dict[str, str] = {
         "You are Dawn the bedtime guide. Speak softly, calmly, and reassuringly, with cozy wording and very brief replies."
     ),
 }
+PRODUCT_STATE_PATH = Path(
+    os.getenv(
+        "BK7258_PRODUCT_STATE_PATH",
+        str(Path(__file__).with_name("product_state.json")),
+    )
+).expanduser()
+CHILD_AGE_BANDS = ["3-4", "5-6", "7-8", "9-10"]
+SAFETY_MODES = {
+    "balanced": "Keep replies age-appropriate, warm, and safe. Avoid scary, violent, or mature themes.",
+    "gentle": "Keep replies extra gentle, emotionally safe, and reassuring for young children.",
+    "independent_reader": "Encourage curiosity and learning while still staying child-safe and easy to understand.",
+}
+LEARNING_PACKS: dict[str, dict[str, str]] = {
+    "english_starter": {
+        "title": "English Starter",
+        "summary": "Teach greetings, simple vocabulary, and short repeat-after-me phrases.",
+        "prompt": "When helpful, include very short English practice phrases with repetition and encouragement.",
+    },
+    "phonics_fun": {
+        "title": "Phonics Fun",
+        "summary": "Help children notice sounds, letters, and simple pronunciation patterns.",
+        "prompt": "Use playful sound-based examples, simple letter-sound links, and short phonics games when appropriate.",
+    },
+    "social_skills": {
+        "title": "Social Skills",
+        "summary": "Model kindness, turn-taking, empathy, and friendly conversation.",
+        "prompt": "Reinforce kind words, patience, sharing, and respectful communication through simple examples.",
+    },
+    "curiosity_science": {
+        "title": "Curiosity Science",
+        "summary": "Answer 'why' questions in child-friendly ways and suggest mini observations.",
+        "prompt": "Explain simple science ideas in an easy, vivid way and invite the child to notice things around them.",
+    },
+}
+STORY_LIBRARY: dict[str, dict[str, str]] = {
+    "forest_friends": {
+        "title": "Forest Friends",
+        "summary": "Gentle stories about animal friends helping each other in a bright forest.",
+        "prompt": "If telling a story, you may draw on a warm forest world with helpful animal friends and simple morals.",
+    },
+    "space_scouts": {
+        "title": "Space Scouts",
+        "summary": "Imaginative stories about brave young explorers solving kind problems in space.",
+        "prompt": "If telling a story, you may use colorful space adventures that stay cozy, optimistic, and child-safe.",
+    },
+    "everyday_bravery": {
+        "title": "Everyday Bravery",
+        "summary": "Stories about small acts of courage like trying new words, making friends, or asking questions.",
+        "prompt": "If telling a story, emphasize everyday courage, kindness, and trying again after mistakes.",
+    },
+    "bedtime_breeze": {
+        "title": "Bedtime Breeze",
+        "summary": "Soft bedtime stories with quiet pacing and calm endings.",
+        "prompt": "If telling a bedtime story, use calm language, soft imagery, and a peaceful ending.",
+    },
+}
+DEFAULT_PRODUCT_STATE: dict[str, Any] = {
+    "device_name": "Dawn",
+    "parent_name": "",
+    "child_name": "Friend",
+    "child_age_band": "5-6",
+    "child_interests": "",
+    "parent_goals": "",
+    "safety_mode": "balanced",
+    "active_learning_pack_ids": ["english_starter"],
+    "active_story_ids": ["forest_friends"],
+}
 
 
 def require_env(name: str) -> str:
@@ -229,6 +296,87 @@ ACTIVE_SESSIONS: dict[str, Session] = {}
 RUNTIME_CONFIG = RuntimeConfig()
 
 
+def sanitize_string_list(value: Any, *, allowed: set[str], fallback: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        return list(fallback)
+    cleaned: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text in allowed and text not in cleaned:
+            cleaned.append(text)
+    return cleaned or list(fallback)
+
+
+def normalize_product_state(raw: dict[str, Any] | None) -> dict[str, Any]:
+    base = dict(DEFAULT_PRODUCT_STATE)
+    raw = raw or {}
+    base["device_name"] = str(raw.get("device_name", base["device_name"])).strip() or base["device_name"]
+    base["parent_name"] = str(raw.get("parent_name", base["parent_name"])).strip()
+    base["child_name"] = str(raw.get("child_name", base["child_name"])).strip() or base["child_name"]
+    age_band = str(raw.get("child_age_band", base["child_age_band"])).strip()
+    base["child_age_band"] = age_band if age_band in CHILD_AGE_BANDS else base["child_age_band"]
+    base["child_interests"] = str(raw.get("child_interests", base["child_interests"])).strip()
+    base["parent_goals"] = str(raw.get("parent_goals", base["parent_goals"])).strip()
+    safety_mode = str(raw.get("safety_mode", base["safety_mode"])).strip()
+    base["safety_mode"] = safety_mode if safety_mode in SAFETY_MODES else base["safety_mode"]
+    base["active_learning_pack_ids"] = sanitize_string_list(
+        raw.get("active_learning_pack_ids"),
+        allowed=set(LEARNING_PACKS),
+        fallback=list(DEFAULT_PRODUCT_STATE["active_learning_pack_ids"]),
+    )
+    base["active_story_ids"] = sanitize_string_list(
+        raw.get("active_story_ids"),
+        allowed=set(STORY_LIBRARY),
+        fallback=list(DEFAULT_PRODUCT_STATE["active_story_ids"]),
+    )
+    return base
+
+
+def load_product_state() -> dict[str, Any]:
+    if not PRODUCT_STATE_PATH.exists():
+        return normalize_product_state(None)
+    try:
+        payload = json.loads(PRODUCT_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("failed to load product state from {}", PRODUCT_STATE_PATH)
+        return normalize_product_state(None)
+    if not isinstance(payload, dict):
+        return normalize_product_state(None)
+    return normalize_product_state(payload)
+
+
+PRODUCT_STATE = load_product_state()
+
+
+def save_product_state() -> None:
+    try:
+        PRODUCT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PRODUCT_STATE_PATH.write_text(
+            json.dumps(PRODUCT_STATE, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("failed to save product state to {}: {}", PRODUCT_STATE_PATH, exc)
+
+
+def product_public_dict() -> dict[str, Any]:
+    return {
+        "setup": dict(PRODUCT_STATE),
+        "child_age_bands": CHILD_AGE_BANDS,
+        "safety_modes": SAFETY_MODES,
+        "learning_packs": LEARNING_PACKS,
+        "story_library": STORY_LIBRARY,
+        "rag_mode": "local-library",
+    }
+
+
+def apply_product_state(update: dict[str, Any]) -> dict[str, Any]:
+    global PRODUCT_STATE
+    PRODUCT_STATE = normalize_product_state({**PRODUCT_STATE, **update})
+    save_product_state()
+    return product_public_dict()
+
+
 def get_provider_api_key(provider: str) -> str:
     normalized = provider.strip().lower()
     if normalized == "anthropic":
@@ -266,10 +414,46 @@ def llm_provider_available(provider: str) -> bool:
 def effective_system_prompt() -> str:
     preset_name = RUNTIME_CONFIG.character_preset
     preset_prompt = CHARACTER_PRESETS.get(preset_name, CHARACTER_PRESETS["companion"])
+    parent_name = PRODUCT_STATE["parent_name"]
+    child_name = PRODUCT_STATE["child_name"]
+    age_band = PRODUCT_STATE["child_age_band"]
+    interests = PRODUCT_STATE["child_interests"]
+    parent_goals = PRODUCT_STATE["parent_goals"]
+    device_name = PRODUCT_STATE["device_name"]
+    safety_prompt = SAFETY_MODES.get(
+        PRODUCT_STATE["safety_mode"],
+        SAFETY_MODES["balanced"],
+    )
+    active_pack_prompts = [
+        LEARNING_PACKS[pack_id]["prompt"]
+        for pack_id in PRODUCT_STATE["active_learning_pack_ids"]
+        if pack_id in LEARNING_PACKS
+    ]
+    active_story_prompts = [
+        STORY_LIBRARY[story_id]["prompt"]
+        for story_id in PRODUCT_STATE["active_story_ids"]
+        if story_id in STORY_LIBRARY
+    ]
     custom_prompt = RUNTIME_CONFIG.system_prompt.strip()
+    sections = [
+        preset_prompt,
+        f"Your toy name is {device_name}.",
+        f"You are talking to a child named {child_name} in the age band {age_band}.",
+        safety_prompt,
+    ]
+    if interests:
+        sections.append(f"Child interests: {interests}.")
+    if parent_name:
+        sections.append(f"The parent or guardian is {parent_name}.")
+    if parent_goals:
+        sections.append(f"Parent goals: {parent_goals}.")
+    if active_pack_prompts:
+        sections.append("Learning pack guidance:\n" + "\n".join(f"- {prompt}" for prompt in active_pack_prompts))
+    if active_story_prompts:
+        sections.append("Story library guidance:\n" + "\n".join(f"- {prompt}" for prompt in active_story_prompts))
     if custom_prompt:
-        return f"{preset_prompt}\n\nAdditional instructions:\n{custom_prompt}"
-    return preset_prompt
+        sections.append(f"Additional runtime instructions:\n{custom_prompt}")
+    return "\n\n".join(sections)
 
 
 def config_public_dict() -> dict[str, Any]:
@@ -299,6 +483,7 @@ def config_public_dict() -> dict[str, Any]:
         "wait_for_idle_before_startup": RUNTIME_CONFIG.wait_for_idle_before_startup,
         "processing_prompt_enabled": RUNTIME_CONFIG.processing_prompt_enabled,
         "processing_prompt_text": RUNTIME_CONFIG.processing_prompt_text,
+        "product": product_public_dict(),
     }
 
 
@@ -1863,12 +2048,13 @@ def server_status_dict() -> dict[str, Any]:
             "voice_path": "wifi-websocket",
             "chip_endpoint": CHIP_ENDPOINT,
             "usb_role": "power-and-flash-only",
-            "admin_panel_url": f"http://{detect_local_ipv4()}:{ADMIN_PORT}/",
+            "admin_panel_url": admin_panel_url(),
             "control_panel_scope": (
                 "lan" if ADMIN_HOST in {"0.0.0.0", "::", ""} else "local-only"
             ),
         },
         "config": config_public_dict(),
+        "product": product_public_dict(),
         "sessions": sessions,
         "connected_session_count": len(sessions),
     }
@@ -1887,6 +2073,16 @@ def make_http_response(
         "Connection: close\r\n"
         "\r\n"
     ).encode("utf-8") + body
+
+
+def admin_panel_url() -> str:
+    if ADMIN_HOST in {"0.0.0.0", "::", ""}:
+        host = detect_local_ipv4()
+    elif ADMIN_HOST in {"127.0.0.1", "localhost", "::1"}:
+        host = "127.0.0.1"
+    else:
+        host = ADMIN_HOST
+    return f"http://{host}:{ADMIN_PORT}/"
 
 
 def make_text_response(status: str, body: str) -> bytes:
@@ -2119,6 +2315,33 @@ def render_control_panel() -> str:
       color: var(--soft);
       line-height: 1.35;
     }}
+    .option-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .option-card {{
+      display: block;
+      padding: 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(15,118,110,0.14);
+      background: rgba(255,255,255,0.9);
+    }}
+    .option-card input {{
+      width: auto;
+      margin-right: 8px;
+    }}
+    .option-card strong {{
+      display: block;
+      font-size: 0.96rem;
+      margin-bottom: 4px;
+    }}
+    .option-card span {{
+      display: block;
+      color: var(--soft);
+      font-size: 0.86rem;
+      line-height: 1.35;
+    }}
     .quick-grid {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2193,6 +2416,25 @@ def render_control_panel() -> str:
         <p class="muted">This panel is LAN-accessible right now, so phones on the same Wi-Fi can control the chip. It is not public on the internet.</p>
       </section>
       <section class="card section-stack">
+        <h2>Family Setup</h2>
+        <label for="deviceName">Toy name</label>
+        <input id="deviceName" value="">
+        <label for="parentName">Parent name</label>
+        <input id="parentName" value="">
+        <label for="childName">Child name</label>
+        <input id="childName" value="">
+        <label for="childAgeBand">Child age band</label>
+        <select id="childAgeBand"></select>
+        <label for="childInterests">Child interests</label>
+        <input id="childInterests" value="" placeholder="dinosaurs, bedtime stories, colors">
+        <label for="parentGoals">Parent goals</label>
+        <textarea id="parentGoals" placeholder="Help with English speaking, bedtime calm-down, asking questions politely"></textarea>
+        <label for="safetyMode">Safety mode</label>
+        <select id="safetyMode"></select>
+        <button id="saveFamily" class="secondary">Save Family Setup</button>
+        <p id="familyResult" class="muted"></p>
+      </section>
+      <section class="card section-stack">
         <h2>Quick Modes</h2>
         <div class="mode-grid">
           <button class="mode-btn ghost" data-mode="companion" data-sample="Hello, I am ready to chat.">
@@ -2222,6 +2464,16 @@ def render_control_panel() -> str:
           <button class="secondary quick-say" data-text="Can you repeat after me: hello, thank you, and goodbye.">Repeat Words</button>
         </div>
         <p id="quickResult" class="muted"></p>
+      </section>
+      <section class="card section-stack">
+        <h2>Learning Packs</h2>
+        <div id="learningPackGrid" class="option-grid"></div>
+        <p class="muted">These act like early curriculum packs for the toy and feed child-learning context into replies.</p>
+      </section>
+      <section class="card section-stack">
+        <h2>Story Library</h2>
+        <div id="storyLibraryGrid" class="option-grid"></div>
+        <p class="muted">This is the first product version of a story knowledge library. Later we can replace this with full RAG and cloud content.</p>
       </section>
       <section class="card section-stack">
         <h2>Speak To Chip</h2>
@@ -2346,6 +2598,67 @@ def render_control_panel() -> str:
       }}
     }}
 
+    function renderSelectableCards(containerId, items, selectedIds) {{
+      const container = document.getElementById(containerId);
+      container.innerHTML = "";
+      for (const [key, item] of Object.entries(items || {{}})) {{
+        const label = document.createElement("label");
+        label.className = "option-card";
+        label.innerHTML = `
+          <strong><input type="checkbox" value="${{key}}" ${{
+            selectedIds.includes(key) ? "checked" : ""
+          }}> ${{item.title}}</strong>
+          <span>${{item.summary}}</span>
+        `;
+        container.appendChild(label);
+      }}
+    }}
+
+    function selectedCardValues(containerId) {{
+      return Array.from(
+        document.querySelectorAll(`#${{containerId}} input[type="checkbox"]:checked`)
+      ).map((node) => node.value);
+    }}
+
+    function populateProduct(status) {{
+      const product = status.product || status.config.product || {{}};
+      const setup = product.setup || {{}};
+      const ageSelect = document.getElementById("childAgeBand");
+      const safetySelect = document.getElementById("safetyMode");
+      ageSelect.innerHTML = "";
+      for (const ageBand of (product.child_age_bands || [])) {{
+        const option = document.createElement("option");
+        option.value = ageBand;
+        option.textContent = ageBand;
+        if (ageBand === setup.child_age_band) option.selected = true;
+        ageSelect.appendChild(option);
+      }}
+      safetySelect.innerHTML = "";
+      for (const [key, value] of Object.entries(product.safety_modes || {{}})) {{
+        const option = document.createElement("option");
+        option.value = key;
+        option.textContent = key.replaceAll("_", " ");
+        option.title = value;
+        if (key === setup.safety_mode) option.selected = true;
+        safetySelect.appendChild(option);
+      }}
+      document.getElementById("deviceName").value = setup.device_name || "";
+      document.getElementById("parentName").value = setup.parent_name || "";
+      document.getElementById("childName").value = setup.child_name || "";
+      document.getElementById("childInterests").value = setup.child_interests || "";
+      document.getElementById("parentGoals").value = setup.parent_goals || "";
+      renderSelectableCards(
+        "learningPackGrid",
+        product.learning_packs || {{}},
+        setup.active_learning_pack_ids || [],
+      );
+      renderSelectableCards(
+        "storyLibraryGrid",
+        product.story_library || {{}},
+        setup.active_story_ids || [],
+      );
+    }}
+
     function populateConfig(status) {{
       const cfg = status.config;
       document.getElementById("llmProvider").value = cfg.llm_provider || "anthropic";
@@ -2379,6 +2692,7 @@ def render_control_panel() -> str:
       showTransport(state.status);
       showStatusBanner(state.status);
       populateConfig(state.status);
+      populateProduct(state.status);
       showSessions(state.status);
     }}
 
@@ -2428,6 +2742,30 @@ def render_control_panel() -> str:
       return data;
     }}
 
+    async function saveProductSetup() {{
+      const payload = {{
+        device_name: document.getElementById("deviceName").value.trim(),
+        parent_name: document.getElementById("parentName").value.trim(),
+        child_name: document.getElementById("childName").value.trim(),
+        child_age_band: document.getElementById("childAgeBand").value,
+        child_interests: document.getElementById("childInterests").value.trim(),
+        parent_goals: document.getElementById("parentGoals").value.trim(),
+        safety_mode: document.getElementById("safetyMode").value,
+        active_learning_pack_ids: selectedCardValues("learningPackGrid"),
+        active_story_ids: selectedCardValues("storyLibraryGrid"),
+      }};
+      const response = await fetch("/api/product-state", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(payload)
+      }});
+      const data = await response.json();
+      document.getElementById("familyResult").textContent =
+        data.ok ? "Family setup saved." : JSON.stringify(data);
+      await refreshStatus();
+      return data;
+    }}
+
     async function runSimulation() {{
       const text = document.getElementById("simulateText").value.trim();
       document.getElementById("simulationOutput").textContent = "Running...";
@@ -2447,6 +2785,7 @@ def render_control_panel() -> str:
 
     document.getElementById("speakBtn").addEventListener("click", sendSpeech);
     document.getElementById("saveConfig").addEventListener("click", saveConfig);
+    document.getElementById("saveFamily").addEventListener("click", saveProductSetup);
     document.getElementById("simulateBtn").addEventListener("click", runSimulation);
     document.getElementById("stickySpeak").addEventListener("click", sendSpeech);
     document.getElementById("stickySave").addEventListener("click", saveConfig);
@@ -2462,6 +2801,7 @@ def render_control_panel() -> str:
     showTransport(state.status);
     showStatusBanner(state.status);
     populateConfig(state.status);
+    populateProduct(state.status);
     showSessions(state.status);
     setInterval(refreshStatus, 2500);
   </script>
@@ -2600,6 +2940,27 @@ async def handle_admin_connection(
                 make_json_response(
                     "200 OK",
                     {"ok": True, "config": apply_runtime_config(payload)},
+                )
+            )
+            await writer.drain()
+            return
+
+        if method == "GET" and parsed.path == "/api/product-state":
+            writer.write(
+                make_json_response(
+                    "200 OK",
+                    {"ok": True, "product": product_public_dict()},
+                )
+            )
+            await writer.drain()
+            return
+
+        if method == "POST" and parsed.path == "/api/product-state":
+            payload = json.loads(body.decode("utf-8") or "{}")
+            writer.write(
+                make_json_response(
+                    "200 OK",
+                    {"ok": True, "product": apply_product_state(payload)},
                 )
             )
             await writer.drain()
@@ -2773,11 +3134,7 @@ async def main() -> None:
     )
     logger.info("BK7258 WebSocket server listening on {}:{}", HOST, PORT)
     logger.info("Chip should connect to {}", CHIP_ENDPOINT)
-    logger.info(
-        "Admin panel listening on http://{}:{}/",
-        detect_local_ipv4(),
-        ADMIN_PORT,
-    )
+    logger.info("Admin panel listening on {}", admin_panel_url())
     async with server, admin_server:
         await asyncio.gather(server.serve_forever(), admin_server.serve_forever())
 

@@ -17,8 +17,14 @@ Current server features:
 - selectable LLM provider in the panel: `Anthropic` or `OpenAI`
 - paste the selected provider API key directly in the panel
 - selectable character presets like `companion`, `storyteller`, and `language_teacher`
+- family setup controls for toy name, child profile, safety mode, learning packs, and story library
 - direct `Send Speech` testing from the panel
 - backend latency simulation from the panel
+
+Product planning docs:
+
+- `PRODUCT_BLUEPRINT.md`
+- `PRODUCT_EXECUTION_PLAN.md`
 
 ## What you need
 
