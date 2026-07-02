@@ -22,6 +22,8 @@ Current control panel features:
 - add the panel to a phone home screen like a lightweight app
 - reload structured content files without editing Python code
 - show recent turns, recent sessions, and average latency in the parent panel
+- show richer parent dashboard summaries for latency, session length, top child, top mode, and top provider
+- filter saved activity by child, provider, character, and search text
 - recommend stories and learning packs based on child age, interests, and parent goals
 - filter content in the panel with search and `recommended only`
 - tighter low-latency defaults: shorter replies, shorter LLM history, and faster server-side VAD turn cutting
@@ -115,6 +117,8 @@ The chip speaks an OpenAI Realtime API-like protocol over raw WebSocket:
 ## Activity History
 - recent activity is persisted to `activity_state.json`
 - the control panel shows recent turns and recent sessions from that file
+- the parent dashboard can filter saved activity by child, provider, character, and search text
+- the parent dashboard shows filtered summary cards and filtered activity breakdowns
 - the activity API is `GET /api/activity`
 - you can change the path with `BK7258_ACTIVITY_STATE_PATH`
 

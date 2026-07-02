@@ -423,24 +423,92 @@ def append_activity_item(key: str, item: dict[str, Any], limit: int) -> None:
     save_activity_state()
 
 
+def activity_values(items: list[dict[str, Any]], field: str) -> list[float]:
+    values: list[float] = []
+    for item in items:
+        value = item.get(field)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values
+
+
+def average_value(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 1)
+
+
+def median_value(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    values = sorted(values)
+    mid = len(values) // 2
+    if len(values) % 2:
+        return round(values[mid], 1)
+    return round((values[mid - 1] + values[mid]) / 2.0, 1)
+
+
+def count_by_field(items: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for item in items:
+        text = str(item.get(field, "")).strip()
+        if not text:
+            continue
+        counts[text] = counts.get(text, 0) + 1
+    return [
+        {"value": value, "count": count}
+        for value, count in sorted(
+            counts.items(),
+            key=lambda pair: (-pair[1], pair[0].lower()),
+        )
+    ]
+
+
+def facet_values(items: list[dict[str, Any]], field: str) -> list[str]:
+    return [item["value"] for item in count_by_field(items, field)]
+
+
+def top_count_label(items: list[dict[str, Any]], field: str, fallback: str = "") -> str:
+    ranked = count_by_field(items, field)
+    if ranked:
+        return str(ranked[0]["value"])
+    return fallback
+
+
 def activity_public_dict() -> dict[str, Any]:
     recent_turns = ACTIVITY_STATE.get("recent_turns", [])
     recent_sessions = ACTIVITY_STATE.get("recent_sessions", [])
-    completed_turns = [
-        item
-        for item in recent_turns
-        if isinstance(item, dict) and isinstance(item.get("total_ms"), (int, float))
-    ]
-    average_total_ms = 0.0
-    if completed_turns:
-        average_total_ms = sum(float(item["total_ms"]) for item in completed_turns) / len(completed_turns)
+    completed_turns = [item for item in recent_turns if isinstance(item, dict)]
+    completed_sessions = [item for item in recent_sessions if isinstance(item, dict)]
+    total_ms_values = activity_values(completed_turns, "total_ms")
+    session_duration_values = activity_values(completed_sessions, "duration_sec")
+    child_counts = count_by_field(completed_turns, "child_name")
+    mode_counts = count_by_field(completed_turns, "character_preset")
+    provider_counts = count_by_field(completed_turns, "llm_provider")
     return {
         "recent_turns": recent_turns,
         "recent_sessions": recent_sessions,
         "summary": {
             "recent_turn_count": len(recent_turns),
             "recent_session_count": len(recent_sessions),
-            "average_total_ms": round(average_total_ms, 1),
+            "average_total_ms": average_value(total_ms_values),
+            "median_total_ms": median_value(total_ms_values),
+            "fastest_total_ms": round(min(total_ms_values), 1) if total_ms_values else 0.0,
+            "slowest_total_ms": round(max(total_ms_values), 1) if total_ms_values else 0.0,
+            "average_session_duration_sec": average_value(session_duration_values),
+            "top_child_name": top_count_label(completed_turns, "child_name"),
+            "top_character_preset": top_count_label(completed_turns, "character_preset"),
+            "top_llm_provider": top_count_label(completed_turns, "llm_provider"),
+        },
+        "facets": {
+            "child_names": facet_values(completed_turns + completed_sessions, "child_name"),
+            "character_presets": facet_values(completed_turns + completed_sessions, "character_preset"),
+            "llm_providers": facet_values(completed_turns + completed_sessions, "llm_provider"),
+        },
+        "breakdowns": {
+            "child_names": child_counts,
+            "character_presets": mode_counts,
+            "llm_providers": provider_counts,
         },
         "storage_path": str(ACTIVITY_STATE_PATH),
     }
@@ -3311,6 +3379,29 @@ def render_control_panel() -> str:
       margin-top: 0;
       min-height: 58px;
     }}
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .summary-card {{
+      padding: 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(15,118,110,0.12);
+      background: rgba(255,255,255,0.88);
+    }}
+    .summary-card strong {{
+      display: block;
+      font-size: 1.2rem;
+      line-height: 1;
+      margin-bottom: 4px;
+    }}
+    .summary-card span {{
+      display: block;
+      color: var(--soft);
+      font-size: 0.82rem;
+      line-height: 1.35;
+    }}
     .activity-list {{
       display: grid;
       gap: 10px;
@@ -3331,6 +3422,17 @@ def render_control_panel() -> str:
       color: var(--soft);
       font-size: 0.86rem;
       line-height: 1.35;
+    }}
+    .filter-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    @media (max-width: 720px) {{
+      .summary-grid,
+      .filter-grid {{
+        grid-template-columns: 1fr;
+      }}
     }}
     .install-note {{
       margin-top: 12px;
@@ -3450,8 +3552,31 @@ def render_control_panel() -> str:
         <p id="quickResult" class="muted"></p>
       </section>
       <section class="card section-stack">
-        <h2>Recent Turns</h2>
+        <h2>Family Dashboard</h2>
+        <div id="activitySummaryGrid" class="summary-grid"></div>
+        <div class="filter-grid">
+          <div>
+            <label for="activityChildFilter">Filter by child</label>
+            <select id="activityChildFilter"></select>
+          </div>
+          <div>
+            <label for="activityProviderFilter">Filter by provider</label>
+            <select id="activityProviderFilter"></select>
+          </div>
+          <div>
+            <label for="activityCharacterFilter">Filter by character</label>
+            <select id="activityCharacterFilter"></select>
+          </div>
+          <div>
+            <label for="activitySearch">Search recent activity</label>
+            <input id="activitySearch" placeholder="story, bedtime, hello, english">
+          </div>
+        </div>
         <div id="activitySummary"></div>
+        <div id="activityBreakdowns" class="activity-list"></div>
+      </section>
+      <section class="card section-stack">
+        <h2>Recent Turns</h2>
         <div id="recentTurns" class="activity-list"></div>
       </section>
       <section class="card section-stack">
@@ -3548,6 +3673,12 @@ def render_control_panel() -> str:
       contentFilters: {{
         search: "",
         recommendedOnly: false,
+      }},
+      activityFilters: {{
+        childName: "",
+        provider: "",
+        character: "",
+        search: "",
       }},
     }};
 
@@ -3740,6 +3871,163 @@ def render_control_panel() -> str:
       );
     }}
 
+    function escapeHtml(value) {{
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }}
+
+    function humanizeKey(value) {{
+      const text = String(value || "").trim();
+      if (!text) return "";
+      return text.replaceAll("_", " ");
+    }}
+
+    function populateSelectOptions(selectId, values, allLabel, selectedValue) {{
+      const select = document.getElementById(selectId);
+      const uniqueValues = Array.from(new Set((values || []).filter((value) => String(value || "").trim())));
+      const normalizedSelected = uniqueValues.includes(selectedValue) ? selectedValue : "";
+      select.innerHTML = "";
+      const allOption = document.createElement("option");
+      allOption.value = "";
+      allOption.textContent = allLabel;
+      select.appendChild(allOption);
+      for (const value of uniqueValues) {{
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = humanizeKey(value);
+        if (value === normalizedSelected) option.selected = true;
+        select.appendChild(option);
+      }}
+      if (!normalizedSelected) {{
+        select.value = "";
+      }}
+      return normalizedSelected;
+    }}
+
+    function populateActivityFilters(status) {{
+      const activity = status.activity || {{}};
+      const facets = activity.facets || {{}};
+      state.activityFilters.childName = populateSelectOptions(
+        "activityChildFilter",
+        facets.child_names || [],
+        "All children",
+        state.activityFilters.childName,
+      );
+      state.activityFilters.provider = populateSelectOptions(
+        "activityProviderFilter",
+        facets.llm_providers || [],
+        "All providers",
+        state.activityFilters.provider,
+      );
+      state.activityFilters.character = populateSelectOptions(
+        "activityCharacterFilter",
+        facets.character_presets || [],
+        "All characters",
+        state.activityFilters.character,
+      );
+      document.getElementById("activitySearch").value = state.activityFilters.search || "";
+    }}
+
+    function itemSearchText(item) {{
+      return [
+        item.child_name,
+        item.character_preset,
+        item.llm_provider,
+        item.transcript,
+        item.reply,
+        item.connected_at,
+        item.timestamp,
+      ].join(" ").toLowerCase();
+    }}
+
+    function filterActivityItems(items) {{
+      const filters = state.activityFilters || {{}};
+      const searchText = String(filters.search || "").trim().toLowerCase();
+      return (items || []).filter((item) => {{
+        if (!item || typeof item !== "object") return false;
+        if (filters.childName && item.child_name !== filters.childName) return false;
+        if (filters.provider && item.llm_provider !== filters.provider) return false;
+        if (filters.character && item.character_preset !== filters.character) return false;
+        if (searchText && !itemSearchText(item).includes(searchText)) return false;
+        return true;
+      }});
+    }}
+
+    function numericActivityValues(items, field) {{
+      return (items || [])
+        .map((item) => Number(item?.[field]))
+        .filter((value) => Number.isFinite(value));
+    }}
+
+    function averageNumber(values) {{
+      if (!values.length) return 0;
+      return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10;
+    }}
+
+    function medianNumber(values) {{
+      if (!values.length) return 0;
+      const sorted = [...values].sort((left, right) => left - right);
+      const mid = Math.floor(sorted.length / 2);
+      if (sorted.length % 2) return Math.round(sorted[mid] * 10) / 10;
+      return Math.round(((sorted[mid - 1] + sorted[mid]) / 2) * 10) / 10;
+    }}
+
+    function countActivityByField(items, field) {{
+      const counts = new Map();
+      for (const item of (items || [])) {{
+        const value = String(item?.[field] || "").trim();
+        if (!value) continue;
+        counts.set(value, (counts.get(value) || 0) + 1);
+      }}
+      return Array.from(counts.entries())
+        .map(([value, count]) => ({{ value, count }}))
+        .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value));
+    }}
+
+    function topActivityLabel(items, field) {{
+      const ranked = countActivityByField(items, field);
+      return ranked.length ? ranked[0].value : "";
+    }}
+
+    function summarizeFilteredActivity(turns, sessions) {{
+      const combined = [...turns, ...sessions];
+      const totalMsValues = numericActivityValues(turns, "total_ms");
+      const durationValues = numericActivityValues(sessions, "duration_sec");
+      return {{
+        recent_turn_count: turns.length,
+        recent_session_count: sessions.length,
+        average_total_ms: averageNumber(totalMsValues),
+        median_total_ms: medianNumber(totalMsValues),
+        fastest_total_ms: totalMsValues.length ? Math.round(Math.min(...totalMsValues) * 10) / 10 : 0,
+        slowest_total_ms: totalMsValues.length ? Math.round(Math.max(...totalMsValues) * 10) / 10 : 0,
+        average_session_duration_sec: averageNumber(durationValues),
+        top_child_name: topActivityLabel(combined, "child_name"),
+        top_character_preset: topActivityLabel(combined, "character_preset"),
+        top_llm_provider: topActivityLabel(combined, "llm_provider"),
+      }};
+    }}
+
+    function formatMetricNumber(value, suffix = "") {{
+      const number = Number(value);
+      if (!Number.isFinite(number)) return "0" + suffix;
+      const rounded = Math.round(number * 10) / 10;
+      const text = Number.isInteger(rounded) ? String(Math.trunc(rounded)) : rounded.toFixed(1);
+      return text + suffix;
+    }}
+
+    function renderSummaryCard(value, label) {{
+      return `
+        <div class="summary-card">
+          <strong>${{escapeHtml(value)}}</strong>
+          <span>${{escapeHtml(label)}}</span>
+        </div>
+      `;
+    }}
+
     function populateConfig(status) {{
       const cfg = status.config;
       document.getElementById("llmProvider").value = cfg.llm_provider || "anthropic";
@@ -3775,44 +4063,121 @@ def render_control_panel() -> str:
 
     function showActivity(status) {{
       const activity = status.activity || {{}};
-      const summary = activity.summary || {{}};
+      populateActivityFilters(status);
+      const allTurns = activity.recent_turns || [];
+      const allSessions = activity.recent_sessions || [];
+      const filteredTurns = filterActivityItems(allTurns);
+      const filteredSessions = filterActivityItems(allSessions);
+      const summary = summarizeFilteredActivity(filteredTurns, filteredSessions);
+      const filterLabels = [];
+      if (state.activityFilters.childName) {{
+        filterLabels.push(`Child: ${{state.activityFilters.childName}}`);
+      }}
+      if (state.activityFilters.provider) {{
+        filterLabels.push(`Provider: ${{state.activityFilters.provider}}`);
+      }}
+      if (state.activityFilters.character) {{
+        filterLabels.push(`Character: ${{humanizeKey(state.activityFilters.character)}}`);
+      }}
+      if (state.activityFilters.search) {{
+        filterLabels.push(`Search: ${{state.activityFilters.search}}`);
+      }}
+
+      const summaryCards = [
+        renderSummaryCard(String(summary.recent_turn_count), "Turns shown"),
+        renderSummaryCard(String(summary.recent_session_count), "Sessions shown"),
+        renderSummaryCard(formatMetricNumber(summary.average_total_ms, " ms"), "Average latency"),
+        renderSummaryCard(formatMetricNumber(summary.median_total_ms, " ms"), "Median latency"),
+        renderSummaryCard(formatMetricNumber(summary.fastest_total_ms, " ms"), "Fastest turn"),
+        renderSummaryCard(formatMetricNumber(summary.slowest_total_ms, " ms"), "Slowest turn"),
+        renderSummaryCard(formatMetricNumber(summary.average_session_duration_sec, " sec"), "Avg session"),
+        renderSummaryCard(summary.top_child_name || "No data", "Top child"),
+        renderSummaryCard(humanizeKey(summary.top_character_preset) || "No data", "Top character"),
+        renderSummaryCard(summary.top_llm_provider || "No data", "Top provider"),
+      ];
+      document.getElementById("activitySummaryGrid").innerHTML = summaryCards.join("");
+
       document.getElementById("activitySummary").innerHTML = `
-        <span class="pill">Recent turns: ${{summary.recent_turn_count || 0}}</span>
-        <span class="pill">Recent sessions: ${{summary.recent_session_count || 0}}</span>
-        <span class="pill">Avg total latency: ${{summary.average_total_ms || 0}} ms</span>
+        <span class="pill">Showing ${{filteredTurns.length}} of ${{allTurns.length}} saved turns</span>
+        <span class="pill">Showing ${{filteredSessions.length}} of ${{allSessions.length}} saved sessions</span>
+        <span class="pill">${{
+          filterLabels.length ? escapeHtml(filterLabels.join(" | ")) : "No dashboard filters active"
+        }}</span>
+        <span class="pill">Store: ${{escapeHtml(activity.storage_path || "unknown")}}</span>
       `;
+
+      const combined = [...filteredTurns, ...filteredSessions];
+      const breakdownGroups = [
+        {{
+          label: "Children",
+          items: countActivityByField(combined, "child_name"),
+        }},
+        {{
+          label: "Characters",
+          items: countActivityByField(combined, "character_preset"),
+          humanize: true,
+        }},
+        {{
+          label: "Providers",
+          items: countActivityByField(combined, "llm_provider"),
+        }},
+      ];
+      const breakdownBox = document.getElementById("activityBreakdowns");
+      breakdownBox.innerHTML = breakdownGroups.map((group) => {{
+        const pills = group.items.length
+          ? group.items.slice(0, 6).map((item) => `
+              <span class="pill">${{
+                escapeHtml(group.humanize ? humanizeKey(item.value) : item.value)
+              }} (${{item.count}})</span>
+            `).join("")
+          : '<span class="muted">No data in this filter view yet.</span>';
+        return `
+          <div class="activity-item">
+            <strong>${{escapeHtml(group.label)}}</strong>
+            <span>${{pills}}</span>
+          </div>
+        `;
+      }}).join("");
 
       const recentTurns = document.getElementById("recentTurns");
       recentTurns.innerHTML = "";
-      for (const turn of (activity.recent_turns || []).slice(0, 6)) {{
+      for (const turn of filteredTurns.slice(0, 6)) {{
         const item = document.createElement("div");
         item.className = "activity-item";
         item.innerHTML = `
-          <strong>${{turn.child_name || "Child"}} asked: ${{shortenText(turn.transcript, 80)}}</strong>
-          <span>${{shortenText(turn.reply, 110)}}</span>
-          <span>${{turn.timestamp || ""}} | ${{turn.character_preset || "companion"}} | ${{turn.llm_provider || "anthropic"}} | total ${{turn.total_ms || 0}} ms</span>
+          <strong>${{escapeHtml(turn.child_name || "Child")}} asked: ${{escapeHtml(shortenText(turn.transcript, 80))}}</strong>
+          <span>${{escapeHtml(shortenText(turn.reply, 110))}}</span>
+          <span>${{escapeHtml(turn.timestamp || "")}} | ${{escapeHtml(humanizeKey(turn.character_preset || "companion"))}} | ${{escapeHtml(turn.llm_provider || "anthropic")}} | total ${{formatMetricNumber(turn.total_ms || 0, " ms")}}</span>
         `;
         recentTurns.appendChild(item);
       }}
       if (!recentTurns.innerHTML) {{
-        recentTurns.innerHTML = '<div class="activity-item"><span>No saved turns yet.</span></div>';
+        recentTurns.innerHTML = '<div class="activity-item"><span>No turns matched the current dashboard filters.</span></div>';
       }}
 
       const recentSessions = document.getElementById("recentSessions");
       recentSessions.innerHTML = "";
-      for (const session of (activity.recent_sessions || []).slice(0, 6)) {{
+      for (const session of filteredSessions.slice(0, 6)) {{
         const item = document.createElement("div");
         item.className = "activity-item";
         item.innerHTML = `
-          <strong>${{session.child_name || "Child"}} | ${{session.character_preset || "companion"}}</strong>
-          <span>Started: ${{session.connected_at || ""}}</span>
-          <span>Duration: ${{session.duration_sec || 0}} sec | Turns: ${{session.turn_count || 0}} | Provider: ${{session.llm_provider || "anthropic"}}</span>
+          <strong>${{escapeHtml(session.child_name || "Child")}} | ${{escapeHtml(humanizeKey(session.character_preset || "companion"))}}</strong>
+          <span>Started: ${{escapeHtml(session.connected_at || "")}}</span>
+          <span>Duration: ${{formatMetricNumber(session.duration_sec || 0, " sec")}} | Turns: ${{escapeHtml(String(session.turn_count || 0))}} | Provider: ${{escapeHtml(session.llm_provider || "anthropic")}}</span>
         `;
         recentSessions.appendChild(item);
       }}
       if (!recentSessions.innerHTML) {{
-        recentSessions.innerHTML = '<div class="activity-item"><span>No saved sessions yet.</span></div>';
+        recentSessions.innerHTML = '<div class="activity-item"><span>No sessions matched the current dashboard filters.</span></div>';
       }}
+    }}
+
+    function updateActivityFilters() {{
+      state.activityFilters.childName = document.getElementById("activityChildFilter").value;
+      state.activityFilters.provider = document.getElementById("activityProviderFilter").value;
+      state.activityFilters.character = document.getElementById("activityCharacterFilter").value;
+      state.activityFilters.search = document.getElementById("activitySearch").value.trim();
+      showActivity(state.status);
     }}
 
     async function refreshStatus() {{
@@ -3822,6 +4187,7 @@ def render_control_panel() -> str:
       showStatusBanner(state.status);
       populateConfig(state.status);
       populateProduct(state.status);
+      populateActivityFilters(state.status);
       showActivity(state.status);
       showSessions(state.status);
     }}
@@ -3937,6 +4303,10 @@ def render_control_panel() -> str:
     document.getElementById("reloadContent").addEventListener("click", reloadContent);
     document.getElementById("contentSearch").addEventListener("input", updateContentFilters);
     document.getElementById("recommendedOnly").addEventListener("change", updateContentFilters);
+    document.getElementById("activityChildFilter").addEventListener("change", updateActivityFilters);
+    document.getElementById("activityProviderFilter").addEventListener("change", updateActivityFilters);
+    document.getElementById("activityCharacterFilter").addEventListener("change", updateActivityFilters);
+    document.getElementById("activitySearch").addEventListener("input", updateActivityFilters);
     document.getElementById("simulateBtn").addEventListener("click", runSimulation);
     document.getElementById("stickySpeak").addEventListener("click", sendSpeech);
     document.getElementById("stickySave").addEventListener("click", saveConfig);
@@ -3953,6 +4323,7 @@ def render_control_panel() -> str:
     showStatusBanner(state.status);
     populateConfig(state.status);
     populateProduct(state.status);
+    populateActivityFilters(state.status);
     showActivity(state.status);
     showSessions(state.status);
     setInterval(refreshStatus, 2500);
