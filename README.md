@@ -13,6 +13,7 @@ Current server features:
 
 - low-latency local TTS by default, with Deepgram fallback
 - browser control panel at `http://YOUR_MAC_IP:8766/`
+- phone-first control panel with quick mode buttons and sticky actions
 - selectable LLM provider in the panel: `Anthropic` or `OpenAI`
 - selectable character presets like `companion`, `storyteller`, and `language_teacher`
 - direct `Send Speech` testing from the panel
@@ -202,6 +203,12 @@ Example:
 
 - `http://10.0.0.62:8766/`
 
+Phone tip:
+
+- open that URL on your phone
+- use `Add to Home Screen`
+- it will behave like a lightweight app for controlling the chip
+
 ## Step 10: Power on the chip
 
 1. Power on the chip.
@@ -229,6 +236,16 @@ If processing takes a moment:
 
 - the chip can say `One moment.` first
 - then it speaks the real reply
+
+## Step 12: Use your phone as the remote control
+
+1. Make sure your phone is on the same Wi-Fi as the Mac and the chip.
+2. Open `http://YOUR_MAC_IP:8766/` on your phone.
+3. Tap `Quick Modes` to switch the chip personality.
+4. Tap `Quick Speech` to send instant test phrases.
+5. Use the bottom sticky buttons to save the mode or send typed speech.
+
+This is the easiest version of a phone app for the chip.
 
 ## Project structure
 
@@ -271,6 +288,14 @@ This is the full runtime flow:
 10. The reply goes to local macOS TTS first by default, with Deepgram fallback.
 11. The server sends the reply audio back to the chip.
 12. The chip speaks the reply.
+
+How the phone control works:
+
+1. the phone opens the control panel from the Mac mini
+2. the panel calls the server API on port `8766`
+3. the server updates runtime config or queues speech
+4. the chip stays connected to the voice server on port `8765`
+5. the chip responds with the selected character and low-latency voice path
 
 What the GitHub firmware build does:
 

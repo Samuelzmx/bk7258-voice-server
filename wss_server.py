@@ -1862,6 +1862,19 @@ def make_json_response(status: str, payload: dict[str, Any]) -> bytes:
     )
 
 
+def web_manifest_dict() -> dict[str, Any]:
+    panel_url = f"http://{detect_local_ipv4()}:{ADMIN_PORT}/"
+    return {
+        "name": "BK7258 Voice Control",
+        "short_name": "BK7258",
+        "start_url": panel_url,
+        "display": "standalone",
+        "background_color": "#f4efe5",
+        "theme_color": "#0f766e",
+        "description": "Control the BK7258 voice toy from your phone on the same Wi-Fi.",
+    }
+
+
 def render_control_panel() -> str:
     initial_status = json.dumps(server_status_dict(), ensure_ascii=True)
     return f"""<!doctype html>
@@ -1869,7 +1882,12 @@ def render_control_panel() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BK7258 Voice Server</title>
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="BK7258">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <title>BK7258 Voice Control</title>
   <style>
     :root {{
       --bg: #f4efe5;
@@ -1878,7 +1896,9 @@ def render_control_panel() -> str:
       --soft: #52606d;
       --accent: #0f766e;
       --accent-2: #b45309;
+      --accent-3: #155e75;
       --line: #d9cbb8;
+      --danger: #a16207;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -1892,13 +1912,13 @@ def render_control_panel() -> str:
       min-height: 100vh;
     }}
     .wrap {{
-      max-width: 1080px;
+      max-width: 1120px;
       margin: 0 auto;
-      padding: 24px 16px 48px;
+      padding: 20px 14px 96px;
     }}
     h1 {{
       margin: 0 0 8px;
-      font-size: clamp(2rem, 4vw, 3.4rem);
+      font-size: clamp(2rem, 6vw, 3.8rem);
       line-height: 0.98;
       letter-spacing: -0.03em;
     }}
@@ -1906,9 +1926,31 @@ def render_control_panel() -> str:
       margin: 0;
       color: var(--soft);
     }}
+    .hero {{
+      background: linear-gradient(135deg, rgba(255,250,240,0.94), rgba(255,244,220,0.98));
+      border: 1px solid var(--line);
+      border-radius: 26px;
+      padding: 20px;
+      box-shadow: 0 18px 48px rgba(31,41,51,0.08);
+    }}
+    .hero-copy {{
+      max-width: 760px;
+    }}
+    .hero p {{
+      font-size: 1rem;
+      line-height: 1.45;
+    }}
+    .banner {{
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(15,118,110,0.1);
+      color: var(--accent);
+      font-weight: 600;
+    }}
     .grid {{
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: 16px;
       margin-top: 20px;
     }}
@@ -1923,6 +1965,9 @@ def render_control_panel() -> str:
     .card h2 {{
       margin: 0 0 12px;
       font-size: 1.1rem;
+    }}
+    .card p + p {{
+      margin-top: 8px;
     }}
     .pill {{
       display: inline-block;
@@ -1966,6 +2011,11 @@ def render_control_panel() -> str:
     button.secondary {{
       background: linear-gradient(135deg, var(--accent-2), #92400e);
     }}
+    button.ghost {{
+      background: rgba(15,118,110,0.1);
+      color: var(--accent);
+      border: 1px solid rgba(15,118,110,0.18);
+    }}
     pre {{
       margin: 0;
       white-space: pre-wrap;
@@ -1988,26 +2038,156 @@ def render_control_panel() -> str:
       font-size: 0.92rem;
       margin-top: 8px;
     }}
+    .status-dot {{
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      margin-right: 8px;
+      vertical-align: middle;
+      background: #b45309;
+    }}
+    .status-dot.live {{
+      background: #0f766e;
+      box-shadow: 0 0 0 6px rgba(15,118,110,0.12);
+    }}
+    .mode-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .mode-btn {{
+      min-height: 76px;
+      text-align: left;
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(15,118,110,0.18);
+      background: linear-gradient(180deg, rgba(15,118,110,0.08), rgba(255,255,255,0.92));
+      color: var(--ink);
+    }}
+    .mode-btn strong {{
+      display: block;
+      font-size: 1rem;
+      margin-bottom: 4px;
+    }}
+    .mode-btn span {{
+      display: block;
+      font-size: 0.88rem;
+      color: var(--soft);
+      line-height: 1.35;
+    }}
+    .quick-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .quick-grid button {{
+      margin-top: 0;
+      min-height: 58px;
+    }}
+    .install-note {{
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(180,83,9,0.08);
+      color: #8b5e08;
+      font-size: 0.92rem;
+      line-height: 1.35;
+    }}
+    .section-stack {{
+      display: grid;
+      gap: 16px;
+    }}
+    .sticky-actions {{
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      padding: 10px;
+      border-radius: 18px;
+      background: rgba(255,250,240,0.92);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 40px rgba(31,41,51,0.14);
+      backdrop-filter: blur(12px);
+    }}
+    .sticky-actions button {{
+      margin-top: 0;
+      min-height: 56px;
+      font-weight: 700;
+    }}
+    .hidden {{
+      display: none;
+    }}
+    @media (min-width: 900px) {{
+      .sticky-actions {{
+        max-width: 420px;
+        left: auto;
+        right: 24px;
+      }}
+    }}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>BK7258 Voice Server</h1>
-    <p>Control the live chip session from your Mac or phone on the same Wi-Fi. Voice transport is Wi-Fi WebSocket, not USB.</p>
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>BK7258 Voice Control</h1>
+        <p>Use your phone as the remote control for the chip. This runs on the Mac mini, the chip talks over Wi-Fi WebSocket, and this page lets you change character, send test speech, and tune latency-sensitive behavior.</p>
+      </div>
+      <div id="statusBanner" class="banner"><span class="status-dot"></span>Checking chip connection…</div>
+      <div class="install-note">
+        Phone tip: open this page in Safari or Chrome on the same Wi-Fi, then use “Add to Home Screen” to make it feel like an app.
+      </div>
+    </section>
     <div class="grid">
-      <section class="card">
+      <section class="card section-stack">
         <h2>Connection</h2>
         <div id="transport"></div>
-        <p class="muted">Open this panel on your phone with the admin URL shown below. Right now it is LAN-accessible, not internet-exposed.</p>
+        <p class="muted">This panel is LAN-accessible right now, so phones on the same Wi-Fi can control the chip. It is not public on the internet.</p>
       </section>
-      <section class="card">
+      <section class="card section-stack">
+        <h2>Quick Modes</h2>
+        <div class="mode-grid">
+          <button class="mode-btn ghost" data-mode="companion" data-sample="Hello, I am ready to chat.">
+            <strong>Companion</strong>
+            <span>Friendly toy mode for general conversation.</span>
+          </button>
+          <button class="mode-btn ghost" data-mode="storyteller" data-sample="Tell me a short bedtime story about a brave little robot.">
+            <strong>Storyteller</strong>
+            <span>Great for short stories and imagination play.</span>
+          </button>
+          <button class="mode-btn ghost" data-mode="language_teacher" data-sample="Teach me three easy English phrases for meeting a new friend.">
+            <strong>Teacher</strong>
+            <span>Short lessons, gentle correction, easy examples.</span>
+          </button>
+          <button class="mode-btn ghost" data-mode="bedtime_guide" data-sample="Say a calm good night message for a child.">
+            <strong>Bedtime</strong>
+            <span>Soft and calming for quiet moments.</span>
+          </button>
+        </div>
+      </section>
+      <section class="card section-stack">
+        <h2>Quick Speech</h2>
+        <div class="quick-grid">
+          <button class="secondary quick-say" data-text="Hello. I am connected and ready.">Test Voice</button>
+          <button class="secondary quick-say" data-text="Good morning. The BK7258 chip is online.">Morning</button>
+          <button class="secondary quick-say" data-text="Let us play a guessing game together.">Play Game</button>
+          <button class="secondary quick-say" data-text="Can you repeat after me: hello, thank you, and goodbye.">Repeat Words</button>
+        </div>
+        <p id="quickResult" class="muted"></p>
+      </section>
+      <section class="card section-stack">
         <h2>Speak To Chip</h2>
         <label for="speakText">Text</label>
         <textarea id="speakText">Hello from the BK7258 control panel.</textarea>
         <button id="speakBtn">Send Speech</button>
         <p id="speakResult" class="muted"></p>
       </section>
-      <section class="card">
+      <section class="card section-stack">
         <h2>Runtime Config</h2>
         <label for="llmProvider">LLM provider</label>
         <select id="llmProvider">
@@ -2039,7 +2219,7 @@ def render_control_panel() -> str:
         <button id="saveConfig">Save Config</button>
         <p id="configResult" class="muted"></p>
       </section>
-      <section class="card">
+      <section class="card section-stack">
         <h2>Latency Simulation</h2>
         <label for="simulateText">Transcript to simulate</label>
         <input id="simulateText" value="Tell me a short story about a brave little robot.">
@@ -2047,10 +2227,14 @@ def render_control_panel() -> str:
         <p class="muted">This measures backend timing without the physical chip.</p>
         <pre id="simulationOutput"></pre>
       </section>
-      <section class="card" style="grid-column: 1 / -1;">
+      <section class="card section-stack" style="grid-column: 1 / -1;">
         <h2>Live Sessions</h2>
         <pre id="sessions"></pre>
       </section>
+    </div>
+    <div class="sticky-actions">
+      <button id="stickySpeak">Send Speech</button>
+      <button id="stickySave" class="secondary">Save Mode</button>
     </div>
   </div>
   <script>
@@ -2085,6 +2269,17 @@ def render_control_panel() -> str:
           availability.openai ? "ready" : "missing"
         }}</span>
       `;
+    }}
+
+    function showStatusBanner(status) {{
+      const banner = document.getElementById("statusBanner");
+      const connected = status.connected_session_count > 0;
+      const dotClass = connected ? "status-dot live" : "status-dot";
+      const sessionWord = status.connected_session_count === 1 ? "session" : "sessions";
+      const text = connected
+        ? "Chip connected. " + status.connected_session_count + " live " + sessionWord + ". You can control it from this phone."
+        : "Chip not connected right now. Keep the phone and chip on the same Wi-Fi, then power the chip on.";
+      banner.innerHTML = `<span class="${{dotClass}}"></span>${{text}}`;
     }}
 
     function populateCharacters(status) {{
@@ -2125,13 +2320,13 @@ def render_control_panel() -> str:
       const response = await fetch("/api/status");
       state.status = await response.json();
       showTransport(state.status);
+      showStatusBanner(state.status);
       populateConfig(state.status);
       showSessions(state.status);
     }}
 
-    async function sendSpeech() {{
-      const text = document.getElementById("speakText").value.trim();
-      const result = document.getElementById("speakResult");
+    async function postSpeech(text, resultId = "speakResult") {{
+      const result = document.getElementById(resultId);
       result.textContent = "Sending...";
       const response = await fetch("/api/speak", {{
         method: "POST",
@@ -2140,7 +2335,13 @@ def render_control_panel() -> str:
       }});
       const data = await response.json();
       result.textContent = JSON.stringify(data);
-      refreshStatus();
+      await refreshStatus();
+      return data;
+    }}
+
+    async function sendSpeech() {{
+      const text = document.getElementById("speakText").value.trim();
+      return postSpeech(text, "speakResult");
     }}
 
     async function saveConfig() {{
@@ -2164,7 +2365,8 @@ def render_control_panel() -> str:
       }});
       const data = await response.json();
       document.getElementById("configResult").textContent = JSON.stringify(data);
-      refreshStatus();
+      await refreshStatus();
+      return data;
     }}
 
     async function runSimulation() {{
@@ -2175,10 +2377,31 @@ def render_control_panel() -> str:
       document.getElementById("simulationOutput").textContent = JSON.stringify(data, null, 2);
     }}
 
+    async function setModeAndOptionallySpeak(mode, sampleText = "") {{
+      document.getElementById("characterPreset").value = mode;
+      await saveConfig();
+      if (sampleText) {{
+        document.getElementById("speakText").value = sampleText;
+        await postSpeech(sampleText, "quickResult");
+      }}
+    }}
+
     document.getElementById("speakBtn").addEventListener("click", sendSpeech);
     document.getElementById("saveConfig").addEventListener("click", saveConfig);
     document.getElementById("simulateBtn").addEventListener("click", runSimulation);
+    document.getElementById("stickySpeak").addEventListener("click", sendSpeech);
+    document.getElementById("stickySave").addEventListener("click", saveConfig);
+    document.querySelectorAll(".quick-say").forEach((button) => {{
+      button.addEventListener("click", () => postSpeech(button.dataset.text || "", "quickResult"));
+    }});
+    document.querySelectorAll(".mode-btn").forEach((button) => {{
+      button.addEventListener("click", () => setModeAndOptionallySpeak(
+        button.dataset.mode || "companion",
+        button.dataset.sample || "",
+      ));
+    }});
     showTransport(state.status);
+    showStatusBanner(state.status);
     populateConfig(state.status);
     showSessions(state.status);
     setInterval(refreshStatus, 2500);
@@ -2286,6 +2509,17 @@ async def handle_admin_connection(
                     "200 OK",
                     render_control_panel().encode("utf-8"),
                     content_type="text/html; charset=utf-8",
+                )
+            )
+            await writer.drain()
+            return
+
+        if method == "GET" and parsed.path == "/manifest.webmanifest":
+            writer.write(
+                make_http_response(
+                    "200 OK",
+                    json.dumps(web_manifest_dict(), ensure_ascii=True, indent=2).encode("utf-8"),
+                    content_type="application/manifest+json; charset=utf-8",
                 )
             )
             await writer.drain()
