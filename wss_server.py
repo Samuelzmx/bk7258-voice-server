@@ -174,6 +174,8 @@ class RuntimeConfig:
     llm_provider: str = DEFAULT_LLM_PROVIDER
     anthropic_model: str = DEFAULT_ANTHROPIC_MODEL
     openai_model: str = DEFAULT_OPENAI_MODEL
+    anthropic_api_key_override: str = ""
+    openai_api_key_override: str = ""
     tts_backend: str = DEFAULT_TTS_BACKEND
     character_preset: str = "companion"
     system_prompt: str = ""
@@ -227,13 +229,38 @@ ACTIVE_SESSIONS: dict[str, Session] = {}
 RUNTIME_CONFIG = RuntimeConfig()
 
 
-def llm_provider_available(provider: str) -> bool:
+def get_provider_api_key(provider: str) -> str:
     normalized = provider.strip().lower()
     if normalized == "anthropic":
-        return bool(ANTHROPIC_API_KEY)
+        return RUNTIME_CONFIG.anthropic_api_key_override or ANTHROPIC_API_KEY
     if normalized == "openai":
-        return bool(OPENAI_API_KEY)
-    return False
+        return RUNTIME_CONFIG.openai_api_key_override or OPENAI_API_KEY
+    return ""
+
+
+def provider_key_source(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized == "anthropic":
+        if RUNTIME_CONFIG.anthropic_api_key_override:
+            return "panel"
+        return "env" if ANTHROPIC_API_KEY else "missing"
+    if normalized == "openai":
+        if RUNTIME_CONFIG.openai_api_key_override:
+            return "panel"
+        return "env" if OPENAI_API_KEY else "missing"
+    return "missing"
+
+
+def mask_key(value: str) -> str:
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def llm_provider_available(provider: str) -> bool:
+    return bool(get_provider_api_key(provider))
 
 
 def effective_system_prompt() -> str:
@@ -258,6 +285,14 @@ def config_public_dict() -> dict[str, Any]:
         "provider_availability": {
             "anthropic": llm_provider_available("anthropic"),
             "openai": llm_provider_available("openai"),
+        },
+        "provider_key_source": {
+            "anthropic": provider_key_source("anthropic"),
+            "openai": provider_key_source("openai"),
+        },
+        "provider_key_masked": {
+            "anthropic": mask_key(get_provider_api_key("anthropic")),
+            "openai": mask_key(get_provider_api_key("openai")),
         },
         "startup_greeting_enabled": RUNTIME_CONFIG.startup_greeting_enabled,
         "startup_listen_prime_enabled": RUNTIME_CONFIG.startup_listen_prime_enabled,
@@ -293,6 +328,12 @@ def apply_runtime_config(update: dict[str, Any]) -> dict[str, Any]:
         value = str(update["openai_model"]).strip()
         if value:
             RUNTIME_CONFIG.openai_model = value
+    if "anthropic_api_key" in update:
+        RUNTIME_CONFIG.anthropic_api_key_override = str(
+            update["anthropic_api_key"]
+        ).strip()
+    if "openai_api_key" in update:
+        RUNTIME_CONFIG.openai_api_key_override = str(update["openai_api_key"]).strip()
     if "system_prompt" in update:
         value = str(update["system_prompt"]).strip()
         RUNTIME_CONFIG.system_prompt = value
@@ -862,11 +903,12 @@ def transcribe_pcm(pcm_bytes: bytes) -> str:
 
 def ask_anthropic(user_text: str, history: list[dict[str, str]]) -> str:
     """Generate a short assistant reply with Anthropic."""
+    api_key = get_provider_api_key("anthropic")
     try:
         response = requests.post(
             ANTHROPIC_MESSAGES_URL,
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
+                "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
                 "content-type": "application/json",
             },
@@ -943,14 +985,15 @@ def extract_openai_output_text(payload: dict[str, Any]) -> str:
 
 def ask_openai(user_text: str, history: list[dict[str, str]]) -> str:
     """Generate a short assistant reply with OpenAI Responses API."""
-    if not OPENAI_API_KEY:
+    api_key = get_provider_api_key("openai")
+    if not api_key:
         return "OpenAI API key is not configured on this server."
 
     try:
         response = requests.post(
             OPENAI_RESPONSES_URL,
             headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json={
@@ -2196,8 +2239,13 @@ def render_control_panel() -> str:
         </select>
         <label for="anthropicModel">Anthropic model</label>
         <input id="anthropicModel" value="">
+        <label for="anthropicApiKey">Anthropic API key</label>
+        <input id="anthropicApiKey" type="password" placeholder="Paste Anthropic key here if you want to override server .env">
         <label for="openaiModel">OpenAI model</label>
         <input id="openaiModel" value="">
+        <label for="openaiApiKey">OpenAI API key</label>
+        <input id="openaiApiKey" type="password" placeholder="Paste OpenAI key here if you want to override server .env">
+        <p id="keyStatus" class="muted"></p>
         <label for="characterPreset">Character</label>
         <select id="characterPreset"></select>
         <label for="ttsBackend">TTS backend</label>
@@ -2246,6 +2294,7 @@ def render_control_panel() -> str:
     function showTransport(status) {{
       const transport = status.transport;
       const availability = status.config.provider_availability;
+      const keySource = status.config.provider_key_source;
       document.getElementById("transport").innerHTML = `
         <span class="pill">Voice: ${{
           transport.voice_path
@@ -2263,10 +2312,10 @@ def render_control_panel() -> str:
           status.connected_session_count
         }}</span>
         <span class="pill">Anthropic key: ${{
-          availability.anthropic ? "ready" : "missing"
+          availability.anthropic ? keySource.anthropic : "missing"
         }}</span>
         <span class="pill">OpenAI key: ${{
-          availability.openai ? "ready" : "missing"
+          availability.openai ? keySource.openai : "missing"
         }}</span>
       `;
     }}
@@ -2302,6 +2351,8 @@ def render_control_panel() -> str:
       document.getElementById("llmProvider").value = cfg.llm_provider || "anthropic";
       document.getElementById("anthropicModel").value = cfg.anthropic_model || "";
       document.getElementById("openaiModel").value = cfg.openai_model || "";
+      document.getElementById("anthropicApiKey").value = "";
+      document.getElementById("openaiApiKey").value = "";
       document.getElementById("ttsBackend").value = cfg.tts_backend || "auto";
       document.getElementById("processingText").value = cfg.processing_prompt_text || "";
       document.getElementById("systemPrompt").value = cfg.system_prompt || "";
@@ -2309,6 +2360,12 @@ def render_control_panel() -> str:
       document.getElementById("startupPrime").checked = !!cfg.startup_listen_prime_enabled;
       document.getElementById("waitForIdle").checked = !!cfg.wait_for_idle_before_startup;
       document.getElementById("processingPrompt").checked = !!cfg.processing_prompt_enabled;
+      document.getElementById("keyStatus").textContent =
+        "Anthropic key: " + (cfg.provider_key_source?.anthropic || "missing") +
+        " (" + (cfg.provider_key_masked?.anthropic || "none") + ")" +
+        " | OpenAI key: " + (cfg.provider_key_source?.openai || "missing") +
+        " (" + (cfg.provider_key_masked?.openai || "none") + ")" +
+        ". Keys entered here stay in server memory until restart.";
       populateCharacters(status);
     }}
 
@@ -2349,6 +2406,8 @@ def render_control_panel() -> str:
         llm_provider: document.getElementById("llmProvider").value,
         anthropic_model: document.getElementById("anthropicModel").value.trim(),
         openai_model: document.getElementById("openaiModel").value.trim(),
+        anthropic_api_key: document.getElementById("anthropicApiKey").value.trim(),
+        openai_api_key: document.getElementById("openaiApiKey").value.trim(),
         character_preset: document.getElementById("characterPreset").value,
         tts_backend: document.getElementById("ttsBackend").value,
         processing_prompt_text: document.getElementById("processingText").value.trim(),

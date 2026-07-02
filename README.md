@@ -15,6 +15,7 @@ Current server features:
 - browser control panel at `http://YOUR_MAC_IP:8766/`
 - phone-first control panel with quick mode buttons and sticky actions
 - selectable LLM provider in the panel: `Anthropic` or `OpenAI`
+- paste the selected provider API key directly in the panel
 - selectable character presets like `companion`, `storyteller`, and `language_teacher`
 - direct `Send Speech` testing from the panel
 - backend latency simulation from the panel
@@ -93,6 +94,9 @@ OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 5. Save the file.
+
+You can also leave the OpenAI key out of `.env` and paste it later in the control panel.
+The panel can hold provider API keys in server memory until restart.
 
 For testers:
 
@@ -244,6 +248,7 @@ If processing takes a moment:
 3. Tap `Quick Modes` to switch the chip personality.
 4. Tap `Quick Speech` to send instant test phrases.
 5. Use the bottom sticky buttons to save the mode or send typed speech.
+6. If you want a different LLM provider, choose the provider, fill in the model name, paste that provider API key, and tap `Save Mode`.
 
 This is the easiest version of a phone app for the chip.
 
