@@ -10,7 +10,7 @@ Working now:
 - server sends greeting / manual speech to chip
 - chip plays server audio clearly
 - chip microphone sends audio back to server
-- server runs STT -> Claude -> TTS
+- server runs STT -> selectable LLM -> low-latency TTS
 - chip speaks the reply back
 
 No firmware flash is required for the final working server-side fix.
@@ -39,6 +39,9 @@ The server was updated to:
 - keep the BK transport header framing
 - add server-side utterance auto-commit when the chip streams mic audio but does
   not explicitly send `input_audio_buffer.commit`
+- add a LAN control panel at `http://10.0.0.62:8766/`
+- add low-latency local macOS TTS mode with Deepgram fallback
+- allow runtime provider and character switching from the control panel
 
 ## Working Runtime Flow
 
@@ -55,18 +58,22 @@ The server was updated to:
 11. Server sends `input_audio_buffer.committed`.
 12. Server runs:
     - Deepgram STT
-    - Claude `claude-haiku-4-5`
-    - Deepgram TTS
+    - Anthropic or OpenAI, depending on control panel selection
+    - local macOS TTS first by default, with Deepgram fallback
 13. Server sends framed PCM audio back to the chip.
 14. Chip speaks the reply.
 
 ## Important Server Behavior
 
-- startup greeting is enabled
-- local manual speech endpoint is enabled:
+- startup greeting is disabled by default for better connection stability
+- startup listen prime is enabled by default
+- LAN control panel is enabled:
+  - `http://10.0.0.62:8766/`
+- local manual speech endpoint is still enabled:
   - `http://127.0.0.1:8766/speak?text=...`
 - server ignores a short window of microphone input after playback to reduce
   self-echo loops
+- a short processing prompt can be enabled so the chip says `One moment.`
 
 ## How To Run
 
@@ -80,9 +87,11 @@ From the project directory:
 
 1. Start the server.
 2. Power on the chip.
-3. Wait for the greeting.
-4. Say a short phrase to the chip.
-5. Wait for the spoken reply.
+3. Open `http://10.0.0.62:8766/` on the Mac or phone.
+4. Confirm the chip session appears in the panel.
+5. Use `Send Speech` to test server -> chip audio.
+6. Say a short phrase to the chip.
+7. Wait for the spoken reply.
 
 Optional manual speech test:
 
@@ -95,3 +104,4 @@ curl -G --data-urlencode "text=Hello Samuel this is a test" http://127.0.0.1:876
 - The chip can now both hear and speak through the new workflow.
 - The working fix was on the server side, not `.env`, not `pyproject.toml`, and
   not a firmware reflash requirement.
+- The current control panel scope is `LAN`, not public internet.

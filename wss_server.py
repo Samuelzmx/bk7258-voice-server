@@ -3,9 +3,9 @@
 
 This server speaks the BK7258 / Agora R1 NOPSRAM protocol directly over
 asyncio TCP sockets. It performs the HTTP upgrade manually, decodes and
-encodes raw WebSocket frames, and wraps chip audio in the 16-byte transport
-header. The current working chip path is PCM in and PCM out, while OPUS
-support remains available as an optional fallback for other firmware modes.
+encodes raw WebSocket frames, accepts OPUS microphone audio from the chip,
+and returns OPUS audio responses wrapped in the chip's 16-byte transport
+header.
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ import asyncio
 import base64
 import ctypes.util
 import hashlib
+import html
 import json
 import math
 import os
 from pathlib import Path
 import shutil
+import socket
 import struct
 import subprocess
 import tempfile
@@ -51,25 +53,27 @@ def _ensure_opus_library() -> None:
 
 _ensure_opus_library()
 
+import opuslib
 import requests
 from dotenv import load_dotenv
 from loguru import logger
-
-try:
-    import opuslib  # type: ignore[import-not-found]
-except Exception:
-    opuslib = None
-
-OPUSLIB_AVAILABLE = opuslib is not None
 
 load_dotenv(Path(__file__).with_name(".env"))
 
 PORT = 8765
 HOST = "0.0.0.0"
-CHIP_ENDPOINT = "ws://10.0.0.62:8765"
-ADMIN_HOST = "127.0.0.1"
-ADMIN_PORT = 8766
+CHIP_ENDPOINT = os.getenv("BK7258_CHIP_ENDPOINT", "ws://10.0.0.62:8765").strip()
+ADMIN_HOST = os.getenv("BK7258_ADMIN_HOST", "0.0.0.0").strip() or "0.0.0.0"
+ADMIN_PORT = int(os.getenv("BK7258_ADMIN_PORT", "8766"))
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+DEFAULT_ANTHROPIC_MODEL = os.getenv(
+    "BK7258_ANTHROPIC_MODEL", "claude-haiku-4-5"
+).strip() or "claude-haiku-4-5"
+DEFAULT_OPENAI_MODEL = os.getenv("BK7258_OPENAI_MODEL", "gpt-5.5").strip() or "gpt-5.5"
+DEFAULT_LLM_PROVIDER = (
+    os.getenv("BK7258_LLM_PROVIDER", "anthropic").strip().lower() or "anthropic"
+)
+DEFAULT_TTS_BACKEND = os.getenv("BK7258_TTS_BACKEND", "auto").strip().lower() or "auto"
 
 SYSTEM_PROMPT = (
     "You are Dawn, a friendly AI voice toy companion. Keep responses short "
@@ -81,8 +85,13 @@ GREETING_TEXT = (
     "path is working."
 )
 LISTENING_TEXT = "Go ahead."
-ENABLE_STARTUP_GREETING = os.getenv("BK7258_STARTUP_GREETING", "1").strip() != "0"
-ENABLE_STARTUP_LISTEN_PRIME = os.getenv("BK7258_STARTUP_LISTEN_PRIME", "0").strip() != "0"
+PROCESSING_TEXT = "One moment."
+ENABLE_STARTUP_GREETING = os.getenv("BK7258_STARTUP_GREETING", "0").strip() != "0"
+ENABLE_STARTUP_LISTEN_PRIME = os.getenv("BK7258_STARTUP_LISTEN_PRIME", "1").strip() != "0"
+WAIT_FOR_IDLE_BEFORE_STARTUP = (
+    os.getenv("BK7258_WAIT_FOR_IDLE_BEFORE_STARTUP", "1").strip() != "0"
+)
+ENABLE_PROCESSING_PROMPT = os.getenv("BK7258_PROCESSING_PROMPT", "1").strip() != "0"
 
 DEEPGRAM_LISTEN_PCM_URL = (
     "https://api.deepgram.com/v1/listen"
@@ -93,6 +102,7 @@ DEEPGRAM_SPEAK_URL = (
     "?model=aura-2-andromeda-en&encoding=linear16&sample_rate=24000&container=none"
 )
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 INBOUND_AUDIO_RATE = 16000
 INBOUND_FRAME_MS = 60
@@ -104,20 +114,42 @@ MIN_PCM_BYTES = 100
 BOOTSTRAP_TONE_HZ = 880.0
 BOOTSTRAP_TONE_MS = DEFAULT_OUTBOUND_FRAME_MS
 BOOTSTRAP_TONE_AMPLITUDE = 0.18
-STARTUP_ACTION_DELAY_SEC = 0.25
-MIN_RESPONSE_AUDIO_DONE_DELAY_SEC = 0.5
+STARTUP_ACTION_DELAY_SEC = 0.4
+MIN_RESPONSE_AUDIO_DONE_DELAY_SEC = 0.05
+PROCESSING_PROMPT_DELAY_SEC = 0.35
 PCM_VAD_START_THRESHOLD = 900
 PCM_VAD_CONTINUE_THRESHOLD = 600
-PCM_VAD_SILENCE_MS = 900
-PCM_VAD_MIN_SPEECH_MS = 350
+PCM_VAD_SILENCE_MS = 450
+PCM_VAD_MIN_SPEECH_MS = 220
 PCM_VAD_MAX_UTTERANCE_MS = 8000
-PCM_IGNORE_AFTER_PLAYBACK_MS = 600
+PCM_IGNORE_AFTER_PLAYBACK_MS = 250
 
 HEAD_MAGIC = 0xF0D5
 HEAD_FLAGS = 0x0001
 AUDIO_HEADER_STRUCT = struct.Struct("<HHIHHBxxx")
 AUDIO_HEADER_SIZE = AUDIO_HEADER_STRUCT.size
 PROMPT_PCM_CACHE: dict[str, bytes] = {}
+CHARACTER_PRESETS: dict[str, str] = {
+    "companion": (
+        "You are Dawn, a friendly AI voice toy companion. Keep responses short, warm, playful, "
+        "and easy to understand when spoken aloud."
+    ),
+    "storyteller": (
+        "You are Dawn the storyteller. Tell child-friendly stories with vivid but simple language, "
+        "clear structure, and gentle energy. Keep spoken replies concise unless the user asks for a longer story."
+    ),
+    "language_teacher": (
+        "You are Dawn the language teacher. Speak clearly, teach with short examples, gently correct mistakes, "
+        "and encourage the learner. Keep spoken replies compact and practical."
+    ),
+    "curious_friend": (
+        "You are Dawn the curious friend. Be upbeat, ask engaging follow-up questions, and celebrate curiosity "
+        "without talking for too long."
+    ),
+    "bedtime_guide": (
+        "You are Dawn the bedtime guide. Speak softly, calmly, and reassuringly, with cozy wording and very brief replies."
+    ),
+}
 
 
 def require_env(name: str) -> str:
@@ -129,13 +161,27 @@ def require_env(name: str) -> str:
 
 DEEPGRAM_API_KEY = require_env("DEEPGRAM_API_KEY")
 ANTHROPIC_API_KEY = require_env("ANTHROPIC_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 
-def make_session_encoder() -> Any | None:
+def make_session_encoder() -> opuslib.Encoder:
     """Build a per-session 24 kHz mono Opus encoder for outbound audio."""
-    if not OPUSLIB_AVAILABLE:
-        return None
     return opuslib.Encoder(OUTBOUND_AUDIO_RATE, 1, opuslib.APPLICATION_VOIP)
+
+
+@dataclass(slots=True)
+class RuntimeConfig:
+    llm_provider: str = DEFAULT_LLM_PROVIDER
+    anthropic_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_model: str = DEFAULT_OPENAI_MODEL
+    tts_backend: str = DEFAULT_TTS_BACKEND
+    character_preset: str = "companion"
+    system_prompt: str = ""
+    startup_greeting_enabled: bool = ENABLE_STARTUP_GREETING
+    startup_listen_prime_enabled: bool = ENABLE_STARTUP_LISTEN_PRIME
+    wait_for_idle_before_startup: bool = WAIT_FOR_IDLE_BEFORE_STARTUP
+    processing_prompt_enabled: bool = ENABLE_PROCESSING_PROMPT
+    processing_prompt_text: str = PROCESSING_TEXT
 
 
 @dataclass(slots=True)
@@ -144,12 +190,13 @@ class Session:
     peer: str
     device_id: str = ""
     input_audio_format: str = "opus"
+    input_audio_rate: int = INBOUND_AUDIO_RATE
     input_audio_duration_ms: int = INBOUND_FRAME_MS
     output_audio_format: str = "opus"
     output_audio_rate: int = OUTBOUND_AUDIO_RATE
     output_audio_duration_ms: int = DEFAULT_OUTBOUND_FRAME_MS
     seq: int = 0
-    encoder: Any | None = field(default_factory=make_session_encoder)
+    encoder: opuslib.Encoder = field(default_factory=make_session_encoder)
     audio_buf: bytearray = field(default_factory=bytearray)
     audio_packets: list[bytes] = field(default_factory=list)
     committed_audio: bytes = b""
@@ -164,13 +211,131 @@ class Session:
     speech_ms: float = 0.0
     silence_ms: float = 0.0
     last_activity: float = field(default_factory=time.time)
+    connected_at: float = field(default_factory=time.time)
+    last_commit_at: float = 0.0
+    last_turn_metrics: dict[str, Any] = field(default_factory=dict)
+    turn_counter: int = 0
+    active_turn_id: int = 0
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     response_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pipeline_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     closing: bool = False
 
 
 ACTIVE_SESSIONS: dict[str, Session] = {}
+RUNTIME_CONFIG = RuntimeConfig()
+
+
+def llm_provider_available(provider: str) -> bool:
+    normalized = provider.strip().lower()
+    if normalized == "anthropic":
+        return bool(ANTHROPIC_API_KEY)
+    if normalized == "openai":
+        return bool(OPENAI_API_KEY)
+    return False
+
+
+def effective_system_prompt() -> str:
+    preset_name = RUNTIME_CONFIG.character_preset
+    preset_prompt = CHARACTER_PRESETS.get(preset_name, CHARACTER_PRESETS["companion"])
+    custom_prompt = RUNTIME_CONFIG.system_prompt.strip()
+    if custom_prompt:
+        return f"{preset_prompt}\n\nAdditional instructions:\n{custom_prompt}"
+    return preset_prompt
+
+
+def config_public_dict() -> dict[str, Any]:
+    return {
+        "llm_provider": RUNTIME_CONFIG.llm_provider,
+        "anthropic_model": RUNTIME_CONFIG.anthropic_model,
+        "openai_model": RUNTIME_CONFIG.openai_model,
+        "tts_backend": RUNTIME_CONFIG.tts_backend,
+        "system_prompt": RUNTIME_CONFIG.system_prompt,
+        "effective_system_prompt": effective_system_prompt(),
+        "character_preset": RUNTIME_CONFIG.character_preset,
+        "character_presets": CHARACTER_PRESETS,
+        "provider_availability": {
+            "anthropic": llm_provider_available("anthropic"),
+            "openai": llm_provider_available("openai"),
+        },
+        "startup_greeting_enabled": RUNTIME_CONFIG.startup_greeting_enabled,
+        "startup_listen_prime_enabled": RUNTIME_CONFIG.startup_listen_prime_enabled,
+        "wait_for_idle_before_startup": RUNTIME_CONFIG.wait_for_idle_before_startup,
+        "processing_prompt_enabled": RUNTIME_CONFIG.processing_prompt_enabled,
+        "processing_prompt_text": RUNTIME_CONFIG.processing_prompt_text,
+    }
+
+
+def parse_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def apply_runtime_config(update: dict[str, Any]) -> dict[str, Any]:
+    if "llm_provider" in update:
+        value = str(update["llm_provider"]).strip().lower()
+        if value in {"anthropic", "openai"}:
+            RUNTIME_CONFIG.llm_provider = value
+    if "anthropic_model" in update:
+        value = str(update["anthropic_model"]).strip()
+        if value:
+            RUNTIME_CONFIG.anthropic_model = value
+    if "openai_model" in update:
+        value = str(update["openai_model"]).strip()
+        if value:
+            RUNTIME_CONFIG.openai_model = value
+    if "system_prompt" in update:
+        value = str(update["system_prompt"]).strip()
+        RUNTIME_CONFIG.system_prompt = value
+    if "character_preset" in update:
+        value = str(update["character_preset"]).strip()
+        if value in CHARACTER_PRESETS:
+            RUNTIME_CONFIG.character_preset = value
+    if "tts_backend" in update:
+        value = str(update["tts_backend"]).strip().lower()
+        if value in {"auto", "local", "deepgram"}:
+            RUNTIME_CONFIG.tts_backend = value
+    if "startup_greeting_enabled" in update:
+        RUNTIME_CONFIG.startup_greeting_enabled = parse_bool(
+            update["startup_greeting_enabled"],
+            RUNTIME_CONFIG.startup_greeting_enabled,
+        )
+    if "startup_listen_prime_enabled" in update:
+        RUNTIME_CONFIG.startup_listen_prime_enabled = parse_bool(
+            update["startup_listen_prime_enabled"],
+            RUNTIME_CONFIG.startup_listen_prime_enabled,
+        )
+    if "wait_for_idle_before_startup" in update:
+        RUNTIME_CONFIG.wait_for_idle_before_startup = parse_bool(
+            update["wait_for_idle_before_startup"],
+            RUNTIME_CONFIG.wait_for_idle_before_startup,
+        )
+    if "processing_prompt_enabled" in update:
+        RUNTIME_CONFIG.processing_prompt_enabled = parse_bool(
+            update["processing_prompt_enabled"],
+            RUNTIME_CONFIG.processing_prompt_enabled,
+        )
+    if "processing_prompt_text" in update:
+        value = str(update["processing_prompt_text"]).strip()
+        if value:
+            RUNTIME_CONFIG.processing_prompt_text = value
+            PROMPT_PCM_CACHE.pop("__processing_prompt__", None)
+
+    return config_public_dict()
+
+
+def next_turn_id(session: Session) -> int:
+    session.turn_counter += 1
+    return session.turn_counter
 
 
 def get_preferred_session(device_id: str = "") -> Session | None:
@@ -378,9 +543,7 @@ def estimate_pcm_level(pcm_bytes: bytes) -> float:
 
 
 def get_pcm_packet_duration_ms(session: Session, payload: bytes) -> float:
-    rate = INBOUND_AUDIO_RATE
-    if session.input_audio_format:
-        rate = INBOUND_AUDIO_RATE
+    rate = session.input_audio_rate or INBOUND_AUDIO_RATE
     if not payload:
         return 0.0
     return (len(payload) / 2) * 1000.0 / rate
@@ -395,6 +558,7 @@ def reset_server_vad(session: Session) -> None:
 async def commit_current_utterance(session: Session, reason: str) -> None:
     if session.closing or not session.audio_packets:
         return
+    session.last_commit_at = time.perf_counter()
     session.committed_audio = bytes(session.audio_buf)
     session.committed_packets = list(session.audio_packets)
     session.audio_buf.clear()
@@ -412,14 +576,7 @@ async def commit_current_utterance(session: Session, reason: str) -> None:
     session.committed_packets.clear()
     session.committed_audio = b""
     await send_json(session, {"type": "input_audio_buffer.committed"})
-    spawn_session_task(
-        session,
-        run_pipeline_with_audio(
-            session,
-            packets_copy,
-            audio_copy,
-        ),
-    )
+    spawn_session_task(session, run_pipeline_with_audio(session, packets_copy, audio_copy, next_turn_id(session)))
 
 
 async def maybe_auto_commit_pcm(session: Session, payload: bytes) -> None:
@@ -485,12 +642,9 @@ def pcm_to_transport_frames(
 
 
 def pcm_to_opus_frames(
-    pcm_bytes: bytes, encoder: Any | None, start_seq: int, frame_ms: int
+    pcm_bytes: bytes, encoder: opuslib.Encoder, start_seq: int, frame_ms: int
 ) -> tuple[list[bytes], int]:
     """Convert 24 kHz mono PCM into OPUS frames with chip transport headers."""
-    if not OPUSLIB_AVAILABLE or encoder is None:
-        return [], start_seq
-
     frames: list[bytes] = []
     seq = start_seq
     frame_samples = OUTBOUND_AUDIO_RATE * frame_ms // 1000
@@ -655,10 +809,6 @@ def looks_like_raw_pcm(pcm_bytes: bytes, content_type: str) -> bool:
 
 def decode_opus_packets_to_pcm(opus_packets: list[bytes]) -> bytes:
     """Decode packetized 16 kHz mono OPUS into linear16 PCM."""
-    if not OPUSLIB_AVAILABLE:
-        logger.warning("received OPUS audio but opuslib is not installed")
-        return b""
-
     decoder = opuslib.Decoder(INBOUND_AUDIO_RATE, 1)
     pcm = bytearray()
 
@@ -710,8 +860,8 @@ def transcribe_pcm(pcm_bytes: bytes) -> str:
     )
 
 
-def ask_claude(user_text: str, history: list[dict[str, str]]) -> str:
-    """Generate a short assistant reply."""
+def ask_anthropic(user_text: str, history: list[dict[str, str]]) -> str:
+    """Generate a short assistant reply with Anthropic."""
     try:
         response = requests.post(
             ANTHROPIC_MESSAGES_URL,
@@ -721,9 +871,9 @@ def ask_claude(user_text: str, history: list[dict[str, str]]) -> str:
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-haiku-4-5",
+                "model": RUNTIME_CONFIG.anthropic_model,
                 "max_tokens": 200,
-                "system": SYSTEM_PROMPT,
+                "system": effective_system_prompt(),
                 "messages": history + [{"role": "user", "content": user_text}],
             },
             timeout=15,
@@ -748,7 +898,95 @@ def ask_claude(user_text: str, history: list[dict[str, str]]) -> str:
         return "Sorry, I had a problem. Try again."
 
 
-def synthesize_speech(text: str) -> bytes | None:
+def build_openai_messages(
+    user_text: str,
+    history: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "developer",
+            "content": [{"type": "input_text", "text": effective_system_prompt()}],
+        }
+    ]
+    for item in history:
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if role not in {"user", "assistant"} or not content:
+            continue
+        messages.append(
+            {
+                "role": role,
+                "content": [{"type": "input_text", "text": content}],
+            }
+        )
+    messages.append(
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": user_text}],
+        }
+    )
+    return messages
+
+
+def extract_openai_output_text(payload: dict[str, Any]) -> str:
+    direct = str(payload.get("output_text", "")).strip()
+    if direct:
+        return direct
+
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            text = str(content.get("text", "")).strip()
+            if text:
+                return text
+    return ""
+
+
+def ask_openai(user_text: str, history: list[dict[str, str]]) -> str:
+    """Generate a short assistant reply with OpenAI Responses API."""
+    if not OPENAI_API_KEY:
+        return "OpenAI API key is not configured on this server."
+
+    try:
+        response = requests.post(
+            OPENAI_RESPONSES_URL,
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": RUNTIME_CONFIG.openai_model,
+                "input": build_openai_messages(user_text, history),
+            },
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        logger.exception("OpenAI request failed: {}", exc)
+        return "Sorry, I had a problem. Try again."
+
+    if not response.ok:
+        logger.warning(
+            "OpenAI returned {}: {}",
+            response.status_code,
+            response.text[:200],
+        )
+        return "Sorry, I had a problem. Try again."
+
+    payload = response.json()
+    text = extract_openai_output_text(payload)
+    if text:
+        return text
+    logger.warning("OpenAI response shape was unexpected: {}", payload)
+    return "Sorry, I had a problem. Try again."
+
+
+def ask_llm(user_text: str, history: list[dict[str, str]]) -> str:
+    provider = RUNTIME_CONFIG.llm_provider
+    if provider == "openai":
+        return ask_openai(user_text, history)
+    return ask_anthropic(user_text, history)
+
+
+def synthesize_speech_deepgram(text: str) -> bytes | None:
     """Return raw 24 kHz linear16 PCM from Deepgram TTS."""
     try:
         response = requests.post(
@@ -854,6 +1092,18 @@ def synthesize_speech_locally(text: str) -> bytes | None:
         return None
 
 
+def synthesize_speech(text: str) -> bytes | None:
+    """Return 24 kHz linear16 PCM using the configured TTS backend."""
+    backend = RUNTIME_CONFIG.tts_backend
+    if backend in {"auto", "local"}:
+        pcm = synthesize_speech_locally(text)
+        if pcm:
+            return pcm
+        if backend == "local":
+            logger.warning("local TTS unavailable, falling back to Deepgram")
+    return synthesize_speech_deepgram(text)
+
+
 def generate_tone_pcm(
     *, frequency_hz: float, duration_ms: int, amplitude: float
 ) -> bytes:
@@ -903,6 +1153,24 @@ def get_greeting_pcm() -> bytes:
     return pcm
 
 
+def get_processing_prompt_pcm() -> bytes:
+    cache_key = "__processing_prompt__"
+    cached = PROMPT_PCM_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    prompt_text = RUNTIME_CONFIG.processing_prompt_text
+    pcm = synthesize_speech_locally(prompt_text)
+    if not pcm:
+        pcm = generate_tone_pcm(
+            frequency_hz=BOOTSTRAP_TONE_HZ,
+            duration_ms=180,
+            amplitude=BOOTSTRAP_TONE_AMPLITUDE,
+        )
+    PROMPT_PCM_CACHE[cache_key] = pcm
+    return pcm
+
+
 async def send_raw(session: Session, payload: bytes) -> None:
     async with session.send_lock:
         if session.closing:
@@ -925,10 +1193,23 @@ def spawn_session_task(
     task.add_done_callback(session.tasks.discard)
 
 
+async def session_keepalive_loop(session: Session) -> None:
+    while not session.closing:
+        await asyncio.sleep(20.0)
+        if session.closing:
+            return
+        await send_raw(session, ws_encode_ping())
+
+
 def schedule_startup_action(session: Session, *, delay_sec: float, reason: str) -> None:
-    if not ENABLE_STARTUP_GREETING and not ENABLE_STARTUP_LISTEN_PRIME:
+    if (
+        not RUNTIME_CONFIG.startup_greeting_enabled
+        and not RUNTIME_CONFIG.startup_listen_prime_enabled
+    ):
         return
     if session.greeted or session.greeting_scheduled or session.closing:
+        return
+    if RUNTIME_CONFIG.wait_for_idle_before_startup and not session.idle_announced:
         return
     session.greeting_scheduled = True
     spawn_session_task(
@@ -1084,11 +1365,11 @@ async def maybe_run_startup_action(
         ):
             return
         session.greeted = True
-        if ENABLE_STARTUP_GREETING:
+        if RUNTIME_CONFIG.startup_greeting_enabled:
             logger.info("[{}] starting greeting after {}", session.peer, reason)
             await send_greeting_response(session)
             return
-        if ENABLE_STARTUP_LISTEN_PRIME:
+        if RUNTIME_CONFIG.startup_listen_prime_enabled:
             logger.info("[{}] priming hands-free listening after {}", session.peer, reason)
             await send_startup_listening_prime(session)
             return
@@ -1101,64 +1382,156 @@ async def send_audio_response(session: Session, text: str) -> None:
         await send_audio_response_locked(session, text)
 
 
+async def maybe_send_processing_prompt(
+    session: Session, turn_id: int, processing_started_at: float
+) -> None:
+    await asyncio.sleep(PROCESSING_PROMPT_DELAY_SEC)
+    if (
+        session.closing
+        or not RUNTIME_CONFIG.processing_prompt_enabled
+        or session.active_turn_id != turn_id
+    ):
+        return
+
+    async with session.response_lock:
+        if session.closing or session.active_turn_id != turn_id:
+            return
+        logger.info(
+            "[{}] turn {} sending processing prompt after {:.0f}ms",
+            session.peer,
+            turn_id,
+            (time.perf_counter() - processing_started_at) * 1000.0,
+        )
+        await send_pcm_response_locked(
+            session,
+            RUNTIME_CONFIG.processing_prompt_text,
+            get_processing_prompt_pcm(),
+            done_delay_sec=0.0,
+        )
+
+
 async def run_pipeline_with_audio(
     session: Session,
     opus_packets: list[bytes],
     raw_audio: bytes,
+    turn_id: int,
 ) -> None:
     """STT -> LLM -> TTS for one committed microphone utterance."""
     if not opus_packets and not raw_audio:
         return
 
-    async with session.response_lock:
+    async with session.pipeline_lock:
         if session.closing:
             return
 
-        loop = asyncio.get_running_loop()
-        transcript = ""
-        if session_uses_pcm_input(session) and raw_audio:
+        session.active_turn_id = turn_id
+        processing_started_at = time.perf_counter()
+        processing_prompt_task = None
+        try:
+            if RUNTIME_CONFIG.processing_prompt_enabled:
+                processing_prompt_task = asyncio.create_task(
+                    maybe_send_processing_prompt(session, turn_id, processing_started_at)
+                )
+
+            loop = asyncio.get_running_loop()
+            transcript = ""
+            stt_started_at = time.perf_counter()
+            if session_uses_pcm_input(session) and raw_audio:
+                logger.info(
+                    "[{}] transcribing {} PCM bytes from chip microphone",
+                    session.peer,
+                    len(raw_audio),
+                )
+                transcript = await loop.run_in_executor(None, transcribe_pcm, raw_audio)
+            elif opus_packets:
+                decode_started_at = time.perf_counter()
+                pcm_audio = await loop.run_in_executor(
+                    None, decode_opus_packets_to_pcm, list(opus_packets)
+                )
+                logger.info(
+                    "[{}] turn {} decoded {} OPUS packets into {} PCM bytes in {:.0f}ms",
+                    session.peer,
+                    turn_id,
+                    len(opus_packets),
+                    len(pcm_audio),
+                    (time.perf_counter() - decode_started_at) * 1000.0,
+                )
+                transcript = await loop.run_in_executor(None, transcribe_pcm, pcm_audio)
+            stt_ms = (time.perf_counter() - stt_started_at) * 1000.0
+
+            # Fallback for non-binary append senders that provide a pre-framed buffer.
+            if not transcript and raw_audio:
+                logger.warning(
+                    "[{}] no transcript from packetized audio; retrying raw buffer fallback",
+                    session.peer,
+                )
+                fallback_started_at = time.perf_counter()
+                transcript = await loop.run_in_executor(None, transcribe_pcm, raw_audio)
+                stt_ms += (time.perf_counter() - fallback_started_at) * 1000.0
+
+            if not transcript:
+                logger.warning("[{}] Empty transcript", session.peer)
+                reply = "Sorry, I didn't catch that. Could you say it again?"
+                reply_pcm = None
+                llm_ms = 0.0
+                tts_ms = 0.0
+            else:
+                logger.info("[{}] You said: {}", session.peer, transcript)
+                llm_started_at = time.perf_counter()
+                reply = await loop.run_in_executor(
+                    None, ask_llm, transcript, list(session.history)
+                )
+                llm_ms = (time.perf_counter() - llm_started_at) * 1000.0
+                logger.info("[{}] Dawn: {}", session.peer, reply)
+
+                session.history.append({"role": "user", "content": transcript})
+                session.history.append({"role": "assistant", "content": reply})
+
+                tts_started_at = time.perf_counter()
+                reply_pcm = await loop.run_in_executor(None, synthesize_speech, reply)
+                tts_ms = (time.perf_counter() - tts_started_at) * 1000.0
+
+            if processing_prompt_task is not None:
+                processing_prompt_task.cancel()
+                await asyncio.gather(processing_prompt_task, return_exceptions=True)
+
+            total_ms = (time.perf_counter() - processing_started_at) * 1000.0
+            commit_to_reply_ms = 0.0
+            if session.last_commit_at:
+                commit_to_reply_ms = (
+                    time.perf_counter() - session.last_commit_at
+                ) * 1000.0
+
+            session.last_turn_metrics = {
+                "turn_id": turn_id,
+                "transcript": transcript,
+                "reply": reply,
+                "stt_ms": round(stt_ms, 1),
+                "llm_ms": round(llm_ms, 1),
+                "tts_ms": round(tts_ms, 1),
+                "total_ms": round(total_ms, 1),
+                "commit_to_reply_ms": round(commit_to_reply_ms, 1),
+                "audio_bytes": len(raw_audio),
+                "opus_packets": len(opus_packets),
+            }
             logger.info(
-                "[{}] transcribing {} PCM bytes from chip microphone",
+                "[{}] turn {} latency stt={:.0f}ms llm={:.0f}ms tts={:.0f}ms total={:.0f}ms",
                 session.peer,
-                len(raw_audio),
+                turn_id,
+                stt_ms,
+                llm_ms,
+                tts_ms,
+                total_ms,
             )
-            transcript = await loop.run_in_executor(None, transcribe_pcm, raw_audio)
-        elif opus_packets:
-            pcm_audio = await loop.run_in_executor(
-                None, decode_opus_packets_to_pcm, list(opus_packets)
-            )
-            logger.info(
-                "[{}] decoded {} OPUS packets into {} PCM bytes",
-                session.peer,
-                len(opus_packets),
-                len(pcm_audio),
-            )
-            transcript = await loop.run_in_executor(None, transcribe_pcm, pcm_audio)
 
-        # Fallback for non-binary append senders that provide a pre-framed buffer.
-        if not transcript and raw_audio:
-            logger.warning(
-                "[{}] no transcript from packetized audio; retrying raw buffer fallback",
-                session.peer,
-            )
-            transcript = await loop.run_in_executor(None, transcribe_pcm, raw_audio)
-
-        if not transcript:
-            logger.warning("[{}] Empty transcript", session.peer)
-            await send_audio_response_locked(
-                session, "Sorry, I didn't catch that. Could you say it again?"
-            )
-            return
-
-        logger.info("[{}] You said: {}", session.peer, transcript)
-        reply = await loop.run_in_executor(
-            None, ask_claude, transcript, list(session.history)
-        )
-        logger.info("[{}] Dawn: {}", session.peer, reply)
-
-        session.history.append({"role": "user", "content": transcript})
-        session.history.append({"role": "assistant", "content": reply})
-        await send_audio_response_locked(session, reply)
+            async with session.response_lock:
+                await send_pcm_response_locked(session, reply, reply_pcm)
+        finally:
+            if processing_prompt_task is not None:
+                processing_prompt_task.cancel()
+                await asyncio.gather(processing_prompt_task, return_exceptions=True)
+            if session.active_turn_id == turn_id:
+                session.active_turn_id = 0
 
 
 async def handle_text_message(session: Session, payload: bytes) -> None:
@@ -1179,7 +1552,7 @@ async def handle_text_message(session: Session, payload: bytes) -> None:
         session_info = message.get("session") or message
         device_id = str(session_info.get("devId", "")).strip()
         session.input_audio_format = str(session_info.get("input_audio_format", "opus"))
-        input_audio_rate = int(
+        session.input_audio_rate = int(
             session_info.get("input_audio_rate", INBOUND_AUDIO_RATE)
         )
         session.input_audio_duration_ms = int(
@@ -1215,7 +1588,7 @@ async def handle_text_message(session: Session, payload: bytes) -> None:
             "devId": device_id,
             "nfcId": session_info.get("nfcId", ""),
             "input_audio_format": session.input_audio_format,
-            "input_audio_rate": input_audio_rate,
+            "input_audio_rate": session.input_audio_rate,
             "input_audio_duration": session.input_audio_duration_ms,
             "output_audio_format": session.output_audio_format,
             "output_audio_rate": session.output_audio_rate,
@@ -1231,10 +1604,10 @@ async def handle_text_message(session: Session, payload: bytes) -> None:
             },
         )
         schedule_startup_action(
-                session,
-                delay_sec=STARTUP_ACTION_DELAY_SEC,
-                reason="session.updated",
-            )
+            session,
+            delay_sec=STARTUP_ACTION_DELAY_SEC,
+            reason="session.updated",
+        )
         return
 
     if msg_type == "input_audio_buffer.append":
@@ -1253,6 +1626,7 @@ async def handle_text_message(session: Session, payload: bytes) -> None:
         return
 
     if msg_type == "input_audio_buffer.commit":
+        session.last_commit_at = time.perf_counter()
         session.committed_audio = bytes(session.audio_buf)
         session.committed_packets = list(session.audio_packets)
         session.audio_buf.clear()
@@ -1275,7 +1649,12 @@ async def handle_text_message(session: Session, payload: bytes) -> None:
         if packets_copy or len(audio_copy) > 100:
             spawn_session_task(
                 session,
-                run_pipeline_with_audio(session, packets_copy, audio_copy),
+                run_pipeline_with_audio(
+                    session,
+                    packets_copy,
+                    audio_copy,
+                    next_turn_id(session),
+                ),
             )
         else:
             spawn_session_task(session, send_audio_response(session, LISTENING_TEXT))
@@ -1396,64 +1775,589 @@ async def close_session(session: Session) -> None:
         pass
 
 
-def make_http_response(status: str, body: str) -> bytes:
-    payload = body.encode("utf-8")
+def detect_local_ipv4() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+    except OSError:
+        return "127.0.0.1"
+
+
+def session_public_dict(session: Session) -> dict[str, Any]:
+    return {
+        "peer": session.peer,
+        "device_id": session.device_id,
+        "handshook": session.handshook,
+        "closing": session.closing,
+        "connected_seconds": round(time.time() - session.connected_at, 1),
+        "last_activity_age_sec": round(time.time() - session.last_activity, 1),
+        "idle_announced": session.idle_announced,
+        "input_audio_format": session.input_audio_format,
+        "input_audio_rate": session.input_audio_rate,
+        "input_audio_duration_ms": session.input_audio_duration_ms,
+        "output_audio_format": session.output_audio_format,
+        "output_audio_rate": session.output_audio_rate,
+        "output_audio_duration_ms": session.output_audio_duration_ms,
+        "seq": session.seq,
+        "active_turn_id": session.active_turn_id,
+        "last_turn_metrics": session.last_turn_metrics,
+    }
+
+
+def server_status_dict() -> dict[str, Any]:
+    sessions = [
+        session_public_dict(session)
+        for session in sorted(
+            ACTIVE_SESSIONS.values(),
+            key=lambda item: item.last_activity,
+            reverse=True,
+        )
+        if not session.closing
+    ]
+    return {
+        "transport": {
+            "voice_path": "wifi-websocket",
+            "chip_endpoint": CHIP_ENDPOINT,
+            "usb_role": "power-and-flash-only",
+            "admin_panel_url": f"http://{detect_local_ipv4()}:{ADMIN_PORT}/",
+            "control_panel_scope": (
+                "lan" if ADMIN_HOST in {"0.0.0.0", "::", ""} else "local-only"
+            ),
+        },
+        "config": config_public_dict(),
+        "sessions": sessions,
+        "connected_session_count": len(sessions),
+    }
+
+
+def make_http_response(
+    status: str,
+    body: bytes,
+    *,
+    content_type: str,
+) -> bytes:
     return (
         f"HTTP/1.1 {status}\r\n"
-        "Content-Type: text/plain; charset=utf-8\r\n"
-        f"Content-Length: {len(payload)}\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"Content-Length: {len(body)}\r\n"
         "Connection: close\r\n"
         "\r\n"
-    ).encode("utf-8") + payload
+    ).encode("utf-8") + body
+
+
+def make_text_response(status: str, body: str) -> bytes:
+    return make_http_response(
+        status,
+        body.encode("utf-8"),
+        content_type="text/plain; charset=utf-8",
+    )
+
+
+def make_json_response(status: str, payload: dict[str, Any]) -> bytes:
+    return make_http_response(
+        status,
+        json.dumps(payload, ensure_ascii=True, indent=2).encode("utf-8"),
+        content_type="application/json; charset=utf-8",
+    )
+
+
+def render_control_panel() -> str:
+    initial_status = json.dumps(server_status_dict(), ensure_ascii=True)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BK7258 Voice Server</title>
+  <style>
+    :root {{
+      --bg: #f4efe5;
+      --card: #fffaf0;
+      --ink: #1f2933;
+      --soft: #52606d;
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --line: #d9cbb8;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(15,118,110,0.16), transparent 28%),
+        radial-gradient(circle at top right, rgba(180,83,9,0.14), transparent 24%),
+        linear-gradient(180deg, #faf5eb, var(--bg));
+      min-height: 100vh;
+    }}
+    .wrap {{
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }}
+    h1 {{
+      margin: 0 0 8px;
+      font-size: clamp(2rem, 4vw, 3.4rem);
+      line-height: 0.98;
+      letter-spacing: -0.03em;
+    }}
+    p {{
+      margin: 0;
+      color: var(--soft);
+    }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }}
+    .card {{
+      background: rgba(255,250,240,0.92);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 18px;
+      box-shadow: 0 16px 40px rgba(31,41,51,0.08);
+      backdrop-filter: blur(8px);
+    }}
+    .card h2 {{
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+    }}
+    .pill {{
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(15,118,110,0.12);
+      color: var(--accent);
+      font-size: 0.92rem;
+      margin: 0 8px 8px 0;
+    }}
+    label {{
+      display: block;
+      font-size: 0.92rem;
+      margin: 12px 0 6px;
+      color: var(--soft);
+    }}
+    input, textarea, select, button {{
+      width: 100%;
+      font: inherit;
+    }}
+    input, textarea, select {{
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: #fffdf8;
+      color: var(--ink);
+    }}
+    textarea {{
+      min-height: 100px;
+      resize: vertical;
+    }}
+    button {{
+      border: 0;
+      border-radius: 12px;
+      padding: 11px 14px;
+      background: linear-gradient(135deg, var(--accent), #155e75);
+      color: white;
+      cursor: pointer;
+      margin-top: 12px;
+    }}
+    button.secondary {{
+      background: linear-gradient(135deg, var(--accent-2), #92400e);
+    }}
+    pre {{
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.86rem;
+      line-height: 1.45;
+      color: #13212d;
+    }}
+    .row {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .row > * {{
+      flex: 1 1 180px;
+    }}
+    .muted {{
+      color: var(--soft);
+      font-size: 0.92rem;
+      margin-top: 8px;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>BK7258 Voice Server</h1>
+    <p>Control the live chip session from your Mac or phone on the same Wi-Fi. Voice transport is Wi-Fi WebSocket, not USB.</p>
+    <div class="grid">
+      <section class="card">
+        <h2>Connection</h2>
+        <div id="transport"></div>
+        <p class="muted">Open this panel on your phone with the admin URL shown below. Right now it is LAN-accessible, not internet-exposed.</p>
+      </section>
+      <section class="card">
+        <h2>Speak To Chip</h2>
+        <label for="speakText">Text</label>
+        <textarea id="speakText">Hello from the BK7258 control panel.</textarea>
+        <button id="speakBtn">Send Speech</button>
+        <p id="speakResult" class="muted"></p>
+      </section>
+      <section class="card">
+        <h2>Runtime Config</h2>
+        <label for="llmProvider">LLM provider</label>
+        <select id="llmProvider">
+          <option value="anthropic">Anthropic</option>
+          <option value="openai">OpenAI</option>
+        </select>
+        <label for="anthropicModel">Anthropic model</label>
+        <input id="anthropicModel" value="">
+        <label for="openaiModel">OpenAI model</label>
+        <input id="openaiModel" value="">
+        <label for="characterPreset">Character</label>
+        <select id="characterPreset"></select>
+        <label for="ttsBackend">TTS backend</label>
+        <select id="ttsBackend">
+          <option value="auto">Auto (local first)</option>
+          <option value="local">Local macOS voice</option>
+          <option value="deepgram">Deepgram cloud voice</option>
+        </select>
+        <label for="processingText">Processing prompt</label>
+        <input id="processingText" value="">
+        <div class="row">
+          <label><input id="startupGreeting" type="checkbox"> Startup greeting</label>
+          <label><input id="startupPrime" type="checkbox"> Startup listen prime</label>
+          <label><input id="waitForIdle" type="checkbox"> Wait for idle before startup</label>
+          <label><input id="processingPrompt" type="checkbox"> Processing prompt</label>
+        </div>
+        <label for="systemPrompt">Extra instructions</label>
+        <textarea id="systemPrompt"></textarea>
+        <button id="saveConfig">Save Config</button>
+        <p id="configResult" class="muted"></p>
+      </section>
+      <section class="card">
+        <h2>Latency Simulation</h2>
+        <label for="simulateText">Transcript to simulate</label>
+        <input id="simulateText" value="Tell me a short story about a brave little robot.">
+        <button id="simulateBtn" class="secondary">Run Simulation</button>
+        <p class="muted">This measures backend timing without the physical chip.</p>
+        <pre id="simulationOutput"></pre>
+      </section>
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2>Live Sessions</h2>
+        <pre id="sessions"></pre>
+      </section>
+    </div>
+  </div>
+  <script>
+    const initialStatus = {initial_status};
+  </script>
+  <script>
+    const state = {{ status: initialStatus }};
+
+    function showTransport(status) {{
+      const transport = status.transport;
+      const availability = status.config.provider_availability;
+      document.getElementById("transport").innerHTML = `
+        <span class="pill">Voice: ${{
+          transport.voice_path
+        }}</span>
+        <span class="pill">Chip target: ${{
+          transport.chip_endpoint
+        }}</span>
+        <span class="pill">Admin: ${{
+          transport.admin_panel_url
+        }}</span>
+        <span class="pill">Panel scope: ${{
+          transport.control_panel_scope
+        }}</span>
+        <span class="pill">Sessions: ${{
+          status.connected_session_count
+        }}</span>
+        <span class="pill">Anthropic key: ${{
+          availability.anthropic ? "ready" : "missing"
+        }}</span>
+        <span class="pill">OpenAI key: ${{
+          availability.openai ? "ready" : "missing"
+        }}</span>
+      `;
+    }}
+
+    function populateCharacters(status) {{
+      const presets = status.config.character_presets || {{}};
+      const select = document.getElementById("characterPreset");
+      const current = status.config.character_preset || "companion";
+      select.innerHTML = "";
+      for (const [key, prompt] of Object.entries(presets)) {{
+        const option = document.createElement("option");
+        option.value = key;
+        option.textContent = key.replaceAll("_", " ");
+        option.title = prompt;
+        if (key === current) option.selected = true;
+        select.appendChild(option);
+      }}
+    }}
+
+    function populateConfig(status) {{
+      const cfg = status.config;
+      document.getElementById("llmProvider").value = cfg.llm_provider || "anthropic";
+      document.getElementById("anthropicModel").value = cfg.anthropic_model || "";
+      document.getElementById("openaiModel").value = cfg.openai_model || "";
+      document.getElementById("ttsBackend").value = cfg.tts_backend || "auto";
+      document.getElementById("processingText").value = cfg.processing_prompt_text || "";
+      document.getElementById("systemPrompt").value = cfg.system_prompt || "";
+      document.getElementById("startupGreeting").checked = !!cfg.startup_greeting_enabled;
+      document.getElementById("startupPrime").checked = !!cfg.startup_listen_prime_enabled;
+      document.getElementById("waitForIdle").checked = !!cfg.wait_for_idle_before_startup;
+      document.getElementById("processingPrompt").checked = !!cfg.processing_prompt_enabled;
+      populateCharacters(status);
+    }}
+
+    function showSessions(status) {{
+      document.getElementById("sessions").textContent = JSON.stringify(status.sessions, null, 2);
+    }}
+
+    async function refreshStatus() {{
+      const response = await fetch("/api/status");
+      state.status = await response.json();
+      showTransport(state.status);
+      populateConfig(state.status);
+      showSessions(state.status);
+    }}
+
+    async function sendSpeech() {{
+      const text = document.getElementById("speakText").value.trim();
+      const result = document.getElementById("speakResult");
+      result.textContent = "Sending...";
+      const response = await fetch("/api/speak", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify({{ text }})
+      }});
+      const data = await response.json();
+      result.textContent = JSON.stringify(data);
+      refreshStatus();
+    }}
+
+    async function saveConfig() {{
+      const payload = {{
+        llm_provider: document.getElementById("llmProvider").value,
+        anthropic_model: document.getElementById("anthropicModel").value.trim(),
+        openai_model: document.getElementById("openaiModel").value.trim(),
+        character_preset: document.getElementById("characterPreset").value,
+        tts_backend: document.getElementById("ttsBackend").value,
+        processing_prompt_text: document.getElementById("processingText").value.trim(),
+        system_prompt: document.getElementById("systemPrompt").value,
+        startup_greeting_enabled: document.getElementById("startupGreeting").checked,
+        startup_listen_prime_enabled: document.getElementById("startupPrime").checked,
+        wait_for_idle_before_startup: document.getElementById("waitForIdle").checked,
+        processing_prompt_enabled: document.getElementById("processingPrompt").checked
+      }};
+      const response = await fetch("/api/config", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(payload)
+      }});
+      const data = await response.json();
+      document.getElementById("configResult").textContent = JSON.stringify(data);
+      refreshStatus();
+    }}
+
+    async function runSimulation() {{
+      const text = document.getElementById("simulateText").value.trim();
+      document.getElementById("simulationOutput").textContent = "Running...";
+      const response = await fetch("/api/simulate?text=" + encodeURIComponent(text));
+      const data = await response.json();
+      document.getElementById("simulationOutput").textContent = JSON.stringify(data, null, 2);
+    }}
+
+    document.getElementById("speakBtn").addEventListener("click", sendSpeech);
+    document.getElementById("saveConfig").addEventListener("click", saveConfig);
+    document.getElementById("simulateBtn").addEventListener("click", runSimulation);
+    showTransport(state.status);
+    populateConfig(state.status);
+    showSessions(state.status);
+    setInterval(refreshStatus, 2500);
+  </script>
+</body>
+</html>""".replace("{initial_status}", initial_status)
+
+
+async def read_http_request(
+    reader: asyncio.StreamReader,
+) -> tuple[str, str, dict[str, str], bytes]:
+    raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+    request_line, raw_headers = raw.decode("latin-1").split("\r\n", 1)
+    method, target, _http_version = request_line.split(" ", 2)
+    headers: dict[str, str] = {}
+    for line in raw_headers.split("\r\n"):
+        if not line or ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+
+    content_length = int(headers.get("content-length", "0") or "0")
+    body = b""
+    if content_length:
+        body = await asyncio.wait_for(reader.readexactly(content_length), timeout=5.0)
+    return method, target, headers, body
+
+
+def synthesize_local_input_pcm(text: str) -> bytes | None:
+    local_pcm = synthesize_speech_locally(text)
+    if not local_pcm:
+        return None
+    return resample_pcm_mono_s16le(local_pcm, OUTBOUND_AUDIO_RATE, INBOUND_AUDIO_RATE)
+
+
+def simulate_turn_from_text(user_text: str) -> dict[str, Any]:
+    user_text = user_text.strip()
+    if not user_text:
+        return {"ok": False, "error": "missing text"}
+
+    transcript = user_text
+    simulated_stt_ms = 0.0
+    stt_mode = "direct-text"
+
+    input_pcm = synthesize_local_input_pcm(user_text)
+    if input_pcm:
+        stt_mode = "local-voice-to-deepgram"
+        stt_started_at = time.perf_counter()
+        detected = transcribe_pcm(input_pcm)
+        simulated_stt_ms = (time.perf_counter() - stt_started_at) * 1000.0
+        if detected:
+            transcript = detected
+
+    llm_started_at = time.perf_counter()
+    reply = ask_llm(transcript, [])
+    llm_ms = (time.perf_counter() - llm_started_at) * 1000.0
+
+    tts_started_at = time.perf_counter()
+    reply_pcm = synthesize_speech(reply)
+    tts_ms = (time.perf_counter() - tts_started_at) * 1000.0
+
+    encode_started_at = time.perf_counter()
+    frame_count = 0
+    if reply_pcm:
+        frames, _next_seq = pcm_to_opus_frames(reply_pcm, make_session_encoder(), 0, 20)
+        frame_count = len(frames)
+    encode_ms = (time.perf_counter() - encode_started_at) * 1000.0
+
+    return {
+        "ok": True,
+        "mode": stt_mode,
+        "llm_provider": RUNTIME_CONFIG.llm_provider,
+        "character_preset": RUNTIME_CONFIG.character_preset,
+        "tts_backend": RUNTIME_CONFIG.tts_backend,
+        "transcript": transcript,
+        "reply": reply,
+        "stt_ms": round(simulated_stt_ms, 1),
+        "llm_ms": round(llm_ms, 1),
+        "tts_ms": round(tts_ms, 1),
+        "encode_ms": round(encode_ms, 1),
+        "total_ms": round(simulated_stt_ms + llm_ms + tts_ms + encode_ms, 1),
+        "reply_frame_count_20ms": frame_count,
+    }
 
 
 async def handle_admin_connection(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
     try:
-        raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5.0)
+        method, target, _headers, body = await read_http_request(reader)
     except Exception:
-        writer.write(make_http_response("400 Bad Request", "bad request\n"))
+        writer.write(make_text_response("400 Bad Request", "bad request\n"))
         await writer.drain()
         writer.close()
         await writer.wait_closed()
         return
 
     try:
-        request_line = raw.decode("latin-1").split("\r\n", 1)[0]
-        method, target, _http_version = request_line.split(" ", 2)
-        if method != "GET":
-            writer.write(make_http_response("405 Method Not Allowed", "use GET\n"))
-            await writer.drain()
-            return
-
         parsed = urlsplit(target)
-        if parsed.path != "/speak":
-            writer.write(make_http_response("404 Not Found", "not found\n"))
-            await writer.drain()
-            return
-
         params = parse_qs(parsed.query, keep_blank_values=False)
-        text = (params.get("text") or [""])[0].strip()
-        device_id = (params.get("device_id") or [""])[0].strip()
-        if not text:
-            writer.write(make_http_response("400 Bad Request", "missing text\n"))
+
+        if method == "GET" and parsed.path == "/":
+            writer.write(
+                make_http_response(
+                    "200 OK",
+                    render_control_panel().encode("utf-8"),
+                    content_type="text/html; charset=utf-8",
+                )
+            )
             await writer.drain()
             return
 
-        session = get_preferred_session(device_id)
-        if session is None:
-            writer.write(make_http_response("409 Conflict", "no active chip session\n"))
+        if method == "GET" and parsed.path == "/api/status":
+            writer.write(make_json_response("200 OK", server_status_dict()))
             await writer.drain()
             return
 
-        logger.info(
-            "[{}] admin speak request: {}",
-            session.peer,
-            text,
-        )
-        spawn_session_task(session, send_audio_response(session, text))
-        writer.write(make_http_response("200 OK", "queued\n"))
+        if method == "GET" and parsed.path == "/api/config":
+            writer.write(make_json_response("200 OK", {"ok": True, "config": config_public_dict()}))
+            await writer.drain()
+            return
+
+        if method == "POST" and parsed.path == "/api/config":
+            payload = json.loads(body.decode("utf-8") or "{}")
+            writer.write(
+                make_json_response(
+                    "200 OK",
+                    {"ok": True, "config": apply_runtime_config(payload)},
+                )
+            )
+            await writer.drain()
+            return
+
+        if (method == "GET" and parsed.path == "/speak") or (
+            method == "POST" and parsed.path == "/api/speak"
+        ):
+            payload: dict[str, Any] = {}
+            if method == "POST" and body:
+                payload = json.loads(body.decode("utf-8") or "{}")
+            text = str(payload.get("text") or (params.get("text") or [""])[0]).strip()
+            device_id = str(
+                payload.get("device_id") or (params.get("device_id") or [""])[0]
+            ).strip()
+            if not text:
+                writer.write(make_json_response("400 Bad Request", {"ok": False, "error": "missing text"}))
+                await writer.drain()
+                return
+
+            session = get_preferred_session(device_id)
+            if session is None:
+                writer.write(
+                    make_json_response(
+                        "409 Conflict",
+                        {"ok": False, "error": "no active chip session"},
+                    )
+                )
+                await writer.drain()
+                return
+
+            logger.info("[{}] admin speak request: {}", session.peer, text)
+            spawn_session_task(session, send_audio_response(session, text))
+            writer.write(
+                make_json_response(
+                    "200 OK",
+                    {"ok": True, "queued": True, "device_id": session.device_id},
+                )
+            )
+            await writer.drain()
+            return
+
+        if method == "GET" and parsed.path == "/api/simulate":
+            text = (params.get("text") or [""])[0].strip()
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, simulate_turn_from_text, text)
+            writer.write(make_json_response("200 OK", result))
+            await writer.drain()
+            return
+
+        writer.write(make_text_response("404 Not Found", "not found\n"))
         await writer.drain()
     finally:
         writer.close()
@@ -1476,6 +2380,7 @@ async def handle_connection(
     try:
         peer_text, buffer = await perform_websocket_upgrade(reader, writer)
         session = Session(writer=writer, peer=peer_text)
+        spawn_session_task(session, session_keepalive_loop(session))
 
         while True:
             frames, buffer = ws_decode_frames(buffer)
@@ -1563,7 +2468,7 @@ async def handle_connection(
 
 
 async def main() -> None:
-    if ENABLE_STARTUP_GREETING:
+    if RUNTIME_CONFIG.startup_greeting_enabled:
         logger.info("preloading greeting audio")
         get_greeting_pcm()
 
@@ -1576,8 +2481,8 @@ async def main() -> None:
     logger.info("BK7258 WebSocket server listening on {}:{}", HOST, PORT)
     logger.info("Chip should connect to {}", CHIP_ENDPOINT)
     logger.info(
-        "Local admin speak endpoint listening on http://{}:{}/speak?text=...",
-        ADMIN_HOST,
+        "Admin panel listening on http://{}:{}/",
+        detect_local_ipv4(),
         ADMIN_PORT,
     )
     async with server, admin_server:

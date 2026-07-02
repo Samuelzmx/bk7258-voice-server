@@ -9,6 +9,15 @@ Goal:
 3. flash the chip
 4. talk to the chip
 
+Current server features:
+
+- low-latency local TTS by default, with Deepgram fallback
+- browser control panel at `http://YOUR_MAC_IP:8766/`
+- selectable LLM provider in the panel: `Anthropic` or `OpenAI`
+- selectable character presets like `companion`, `storyteller`, and `language_teacher`
+- direct `Send Speech` testing from the panel
+- backend latency simulation from the panel
+
 ## What you need
 
 - 1 MacBook
@@ -18,6 +27,7 @@ Goal:
 - 1 GitHub account
 - `DEEPGRAM_API_KEY`
 - `ANTHROPIC_API_KEY`
+- optional `OPENAI_API_KEY`
 
 ## What to download
 
@@ -78,6 +88,7 @@ Important:
 ```env
 DEEPGRAM_API_KEY=your_deepgram_api_key_here
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 5. Save the file.
@@ -183,6 +194,14 @@ If macOS blocks it:
 
 Leave this window open.
 
+You can then open the control panel on the same Wi-Fi at:
+
+- `http://YOUR_MAC_IP:8766/`
+
+Example:
+
+- `http://10.0.0.62:8766/`
+
 ## Step 10: Power on the chip
 
 1. Power on the chip.
@@ -191,13 +210,25 @@ Leave this window open.
 Expected result:
 
 - the server window shows a chip connection
-- the chip should speak after connecting
+- the control panel can show the chip connection
+- the chip may stay quiet on connect because startup greeting is disabled by default for better stability
 
 ## Step 11: Talk to the chip
 
 1. Speak to the chip normally.
 2. Wait a moment.
 3. The chip should answer back.
+
+If you want to test server to chip audio first:
+
+1. open the control panel
+2. use `Send Speech`
+3. the chip should speak that text out loud
+
+If processing takes a moment:
+
+- the chip can say `One moment.` first
+- then it speaks the real reply
 
 ## Project structure
 
@@ -207,6 +238,8 @@ These are the main files:
   This guide
 - `wss_server.py`
   The actual voice server
+- `WORKFLOW_STATUS.md`
+  A short status and workflow summary
 - `setup_server.command`
   Double-click this once to set up Python and install packages
 - `start_server.command`
@@ -232,8 +265,10 @@ This is the full runtime flow:
 6. You speak to the chip.
 7. The chip sends microphone audio to `wss_server.py`.
 8. `wss_server.py` sends that audio to Deepgram for speech-to-text.
-9. The text goes to Claude `claude-haiku-4-5`.
-10. Claude's reply goes to Deepgram for text-to-speech.
+9. The text goes to the selected LLM provider:
+   - Anthropic
+   - or OpenAI, if `OPENAI_API_KEY` is configured
+10. The reply goes to local macOS TTS first by default, with Deepgram fallback.
 11. The server sends the reply audio back to the chip.
 12. The chip speaks the reply.
 
@@ -253,7 +288,9 @@ What the server needs to work:
 - your Mac and chip must be on the same Wi‑Fi
 - the chip firmware must contain the correct Mac IP
 - `.env` must contain `DEEPGRAM_API_KEY` and `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY` is only needed if you want to switch the panel to OpenAI
 - `start_server.command` must be running
+- the control panel is LAN-accessible by default, not public internet accessible
 
 ## If you want to force a test sentence
 

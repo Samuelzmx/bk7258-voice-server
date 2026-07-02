@@ -14,4 +14,5 @@ if [ ! -f ./.env ]; then
   exit 1
 fi
 
+echo "Control panel will be available at http://YOUR_MAC_IP:8766/"
 exec ./.venv/bin/python3 ./wss_server.py
