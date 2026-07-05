@@ -6,6 +6,15 @@ Product planning docs:
 - `PRODUCT_BLUEPRINT.md`
 - `PRODUCT_EXECUTION_PLAN.md`
 
+Project structure:
+- `wss_server.py`: live BK7258 WebSocket voice server and control panel
+- `bk7258_product_runtime.py`: child profile, content loading, and ranked local retrieval layer
+- `content/learning_packs.json`: editable lesson pack catalog
+- `content/story_library.json`: editable story catalog
+- `setup_server.command`: guided Mac setup for testers
+- `start_server.command`: double-click launcher for the server
+- `start_server.sh`: shell entrypoint used by the launcher
+
 Current control panel features:
 - switch LLM provider between `Anthropic` and `OpenAI`
 - set Anthropic and OpenAI model names in the panel
@@ -37,17 +46,18 @@ Current control panel features:
 
 ## Setup
 
-1. Install system dependency (one time):
-   `brew install opus`
+1. Recommended for Mac testers:
+   double-click `setup_server.command`
 
-2. Create virtualenv and install deps:
-   `uv venv --python python3.14`
-   `uv pip install opuslib requests python-dotenv loguru`
+   It will:
+   - check Homebrew
+   - install `opus` if needed
+   - create `.env` if missing
+   - open `.env` in TextEdit
+   - create `.venv`
+   - install Python packages
 
-3. Copy `.env.example` to `.env` and fill in API keys:
-   `cp .env.example .env`
-
-   Required:
+2. In `.env`, fill in:
    - `DEEPGRAM_API_KEY`
    - `ANTHROPIC_API_KEY`
 
@@ -55,13 +65,13 @@ Current control panel features:
    - `OPENAI_API_KEY`
    - `BK7258_PANEL_ACCESS_CODE`
 
-   You can also leave `OPENAI_API_KEY` out of `.env` and paste it later in the control panel.
-   The panel can override the LLM API key in memory until the server restarts.
+3. Start server:
+   double-click `start_server.command`
 
-4. Start server:
+   Terminal fallback:
    `./start_server.sh`
 
-5. Open the control panel:
+4. Open the control panel:
    `http://YOUR_MAC_IP:8766/`
 
    Example on this setup:

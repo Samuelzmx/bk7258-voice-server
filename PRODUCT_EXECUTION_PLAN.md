@@ -46,6 +46,7 @@ The current experimental product layer adds:
 - a phone onboarding page
 - a fully local onboarding QR path
 - optional local parent access-code protection
+- guided Mac setup and launch scripts for testers
 - persistent recent-turn and recent-session history for parents
 - richer parent dashboard summaries and activity filters
 - age-aware content recommendations and parent-side content filtering

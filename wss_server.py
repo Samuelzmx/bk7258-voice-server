@@ -57,6 +57,7 @@ _ensure_opus_library()
 
 import opuslib
 import requests
+from bk7258_product_runtime import ProductRuntime
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -258,55 +259,6 @@ DEFAULT_STORY_LIBRARY: ContentCatalog = {
         "topics": ["night", "calm breathing", "gentle imagery"],
     },
 }
-CONTENT_TOKEN_RE = re.compile(r"[a-z0-9]+")
-CONTENT_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "about",
-    "at",
-    "be",
-    "can",
-    "for",
-    "from",
-    "how",
-    "i",
-    "in",
-    "is",
-    "it",
-    "me",
-    "my",
-    "of",
-    "on",
-    "please",
-    "the",
-    "to",
-    "we",
-    "with",
-    "you",
-    "your",
-}
-CONTENT_SEMANTIC_GROUPS: dict[str, set[str]] = {
-    "story": {"story", "stories", "storytelling", "storyteller", "tale", "tales", "adventure"},
-    "bedtime": {"bedtime", "sleep", "sleepy", "night", "goodnight", "dream", "dreams"},
-    "calm": {"calm", "quiet", "gentle", "soft", "peaceful", "breathing"},
-    "english": {"english", "language", "speak", "speaking", "word", "words", "phrase", "phrases", "vocabulary"},
-    "phonics": {"phonics", "reading", "pronunciation", "letter", "letters", "sound", "sounds"},
-    "social": {"social", "kind", "kindness", "friend", "friends", "friendship", "sharing", "manners", "polite", "conversation"},
-    "science": {"science", "curious", "curiosity", "why", "question", "questions", "nature", "experiment", "experiments", "observation", "observe"},
-    "space": {"space", "star", "stars", "planet", "planets", "moon", "rocket"},
-    "confidence": {"confidence", "brave", "bravery", "courage", "resilience", "school", "trying", "try"},
-}
-CHARACTER_CONTENT_HINTS: dict[str, set[str]] = {
-    "companion": {"social"},
-    "storyteller": {"story", "space", "confidence"},
-    "language_teacher": {"english", "phonics"},
-    "curious_friend": {"science", "social"},
-    "bedtime_guide": {"bedtime", "calm", "story"},
-}
-LEARNING_PACKS_PATH = CONTENT_DIR / "learning_packs.json"
-STORY_LIBRARY_PATH = CONTENT_DIR / "story_library.json"
 DEFAULT_PRODUCT_STATE_FIELDS: dict[str, Any] = {
     "device_name": "Dawn",
     "parent_name": "",
@@ -561,395 +513,40 @@ def activity_public_dict() -> dict[str, Any]:
     }
 
 
-def clone_content_catalog(catalog: ContentCatalog) -> ContentCatalog:
-    return {key: dict(value) for key, value in catalog.items()}
+PRODUCT_RUNTIME = ProductRuntime(
+    content_dir=CONTENT_DIR,
+    product_state_path=PRODUCT_STATE_PATH,
+    child_age_bands=CHILD_AGE_BANDS,
+    safety_modes=SAFETY_MODES,
+    default_learning_packs=DEFAULT_LEARNING_PACKS,
+    default_story_library=DEFAULT_STORY_LIBRARY,
+    default_product_state_fields=DEFAULT_PRODUCT_STATE_FIELDS,
+)
+PRODUCT_STATE = PRODUCT_RUNTIME.product_state
+LEARNING_PACKS = PRODUCT_RUNTIME.learning_packs
+STORY_LIBRARY = PRODUCT_RUNTIME.story_library
 
 
-def normalize_string_sequence(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    cleaned: list[str] = []
-    for item in value:
-        text = str(item).strip()
-        if text and text not in cleaned:
-            cleaned.append(text)
-    return cleaned
+def sync_product_runtime_aliases() -> None:
+    global PRODUCT_STATE, LEARNING_PACKS, STORY_LIBRARY
+    PRODUCT_STATE = PRODUCT_RUNTIME.product_state
+    LEARNING_PACKS = PRODUCT_RUNTIME.learning_packs
+    STORY_LIBRARY = PRODUCT_RUNTIME.story_library
 
 
-def normalize_content_entry(entry_id: str, raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    title = str(raw.get("title", "")).strip() or entry_id.replace("_", " ").title()
-    summary = str(raw.get("summary", "")).strip()
-    prompt = str(raw.get("prompt", "")).strip()
-    if not summary or not prompt:
-        return None
-    return {
-        "title": title,
-        "summary": summary,
-        "prompt": prompt,
-        "age_bands": [
-            age_band
-            for age_band in normalize_string_sequence(raw.get("age_bands"))
-            if age_band in CHILD_AGE_BANDS
-        ],
-        "goal_tags": normalize_string_sequence(raw.get("goal_tags")),
-        "topics": normalize_string_sequence(raw.get("topics")),
-    }
-
-
-def load_content_catalog(
-    path: Path,
-    fallback: ContentCatalog,
-) -> ContentCatalog:
-    if not path.exists():
-        return clone_content_catalog(fallback)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("failed to load content catalog from {}", path)
-        return clone_content_catalog(fallback)
-    if not isinstance(payload, dict):
-        logger.warning("content catalog at {} was not a JSON object", path)
-        return clone_content_catalog(fallback)
-    normalized: ContentCatalog = {}
-    for entry_id, raw_entry in payload.items():
-        key = str(entry_id).strip()
-        if not key:
-            continue
-        entry = normalize_content_entry(key, raw_entry)
-        if entry is None:
-            logger.warning("skipping invalid content entry '{}' in {}", key, path)
-            continue
-        normalized[key] = entry
-    if normalized:
-        return normalized
-    logger.warning("content catalog at {} had no valid entries", path)
-    return clone_content_catalog(fallback)
-
-
-LEARNING_PACKS = load_content_catalog(LEARNING_PACKS_PATH, DEFAULT_LEARNING_PACKS)
-STORY_LIBRARY = load_content_catalog(STORY_LIBRARY_PATH, DEFAULT_STORY_LIBRARY)
-
-
-def default_selected_ids(
-    catalog: ContentCatalog,
-    preferred: list[str],
-) -> list[str]:
-    selected = [entry_id for entry_id in preferred if entry_id in catalog]
-    if selected:
-        return selected
-    return list(catalog)[:1]
-
-
-def default_product_state() -> dict[str, Any]:
-    base = dict(DEFAULT_PRODUCT_STATE_FIELDS)
-    base["active_learning_pack_ids"] = default_selected_ids(
-        LEARNING_PACKS,
-        ["english_starter"],
-    )
-    base["active_story_ids"] = default_selected_ids(
-        STORY_LIBRARY,
-        ["forest_friends"],
-    )
-    return base
-
-
-def sanitize_string_list(value: Any, *, allowed: set[str], fallback: list[str]) -> list[str]:
-    if not isinstance(value, list):
-        return list(fallback)
-    cleaned: list[str] = []
-    for item in value:
-        text = str(item).strip()
-        if text in allowed and text not in cleaned:
-            cleaned.append(text)
-    return cleaned or list(fallback)
-
-
-def normalize_product_state(raw: dict[str, Any] | None) -> dict[str, Any]:
-    base = default_product_state()
-    raw = raw or {}
-    base["device_name"] = str(raw.get("device_name", base["device_name"])).strip() or base["device_name"]
-    base["parent_name"] = str(raw.get("parent_name", base["parent_name"])).strip()
-    base["child_name"] = str(raw.get("child_name", base["child_name"])).strip() or base["child_name"]
-    age_band = str(raw.get("child_age_band", base["child_age_band"])).strip()
-    base["child_age_band"] = age_band if age_band in CHILD_AGE_BANDS else base["child_age_band"]
-    base["child_interests"] = str(raw.get("child_interests", base["child_interests"])).strip()
-    base["parent_goals"] = str(raw.get("parent_goals", base["parent_goals"])).strip()
-    safety_mode = str(raw.get("safety_mode", base["safety_mode"])).strip()
-    base["safety_mode"] = safety_mode if safety_mode in SAFETY_MODES else base["safety_mode"]
-    base["active_learning_pack_ids"] = sanitize_string_list(
-        raw.get("active_learning_pack_ids"),
-        allowed=set(LEARNING_PACKS),
-        fallback=list(base["active_learning_pack_ids"]),
-    )
-    base["active_story_ids"] = sanitize_string_list(
-        raw.get("active_story_ids"),
-        allowed=set(STORY_LIBRARY),
-        fallback=list(base["active_story_ids"]),
-    )
-    return base
-
-
-def load_product_state() -> dict[str, Any]:
-    if not PRODUCT_STATE_PATH.exists():
-        return normalize_product_state(None)
-    try:
-        payload = json.loads(PRODUCT_STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("failed to load product state from {}", PRODUCT_STATE_PATH)
-        return normalize_product_state(None)
-    if not isinstance(payload, dict):
-        return normalize_product_state(None)
-    return normalize_product_state(payload)
-
-
-PRODUCT_STATE = load_product_state()
-
-
-def save_product_state() -> None:
-    try:
-        PRODUCT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PRODUCT_STATE_PATH.write_text(
-            json.dumps(PRODUCT_STATE, ensure_ascii=True, indent=2),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        logger.warning("failed to save product state to {}: {}", PRODUCT_STATE_PATH, exc)
-
-
-def unique_texts(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    cleaned: list[str] = []
-    for item in items:
-        text = str(item).strip()
-        if text and text not in seen:
-            cleaned.append(text)
-            seen.add(text)
-    return cleaned
-
-
-def normalize_content_token(token: str) -> str:
-    token = token.strip().lower()
-    if token.endswith("ies") and len(token) > 4:
-        return token[:-3] + "y"
-    if token.endswith("s") and len(token) > 4 and not token.endswith("ss"):
-        return token[:-1]
-    return token
-
-
-def content_tokens(text: str) -> list[str]:
-    return unique_texts(
-        [
-            normalized
-            for raw in CONTENT_TOKEN_RE.findall(text.lower())
-            if (normalized := normalize_content_token(raw)) and normalized not in CONTENT_STOPWORDS
-        ]
-    )
-
-
-def normalized_content_phrase(text: str) -> str:
-    return " ".join(content_tokens(text))
-
-
-def semantic_groups_for_tokens(tokens: set[str]) -> set[str]:
-    groups: set[str] = set()
-    for group, members in CONTENT_SEMANTIC_GROUPS.items():
-        if tokens & members:
-            groups.add(group)
-    return groups
-
-
-def semantic_group_label(group: str) -> str:
-    labels = {
-        "story": "story",
-        "bedtime": "bedtime",
-        "calm": "calm",
-        "english": "English",
-        "phonics": "phonics",
-        "social": "social skills",
-        "science": "curiosity",
-        "space": "space",
-        "confidence": "confidence",
-    }
-    return labels.get(group, group.replace("_", " "))
+def current_character_preset() -> str:
+    return RUNTIME_CONFIG.character_preset
 
 
 def product_keyword_text() -> str:
-    return " ".join(
-        value.strip().lower()
-        for value in (
-            str(PRODUCT_STATE.get("child_interests", "")),
-            str(PRODUCT_STATE.get("parent_goals", "")),
-        )
-        if value.strip()
-    )
+    return PRODUCT_RUNTIME.product_keyword_text()
 
 
 def content_query_dict(user_text: str = "") -> dict[str, Any]:
-    request_text = normalized_content_phrase(user_text)
-    profile_text = normalized_content_phrase(product_keyword_text())
-    request_tokens = set(content_tokens(user_text))
-    profile_tokens = set(content_tokens(product_keyword_text()))
-    mode_groups = set(CHARACTER_CONTENT_HINTS.get(RUNTIME_CONFIG.character_preset, set()))
-    return {
-        "request_text": request_text,
-        "profile_text": profile_text,
-        "request_tokens": request_tokens,
-        "profile_tokens": profile_tokens,
-        "request_groups": semantic_groups_for_tokens(request_tokens),
-        "profile_groups": semantic_groups_for_tokens(profile_tokens),
-        "mode_groups": mode_groups,
-    }
-
-
-def age_band_retrieval_score(
-    target_age_band: str,
-    entry_age_bands: list[str],
-) -> tuple[int, str]:
-    if not target_age_band or target_age_band not in CHILD_AGE_BANDS:
-        return 0, ""
-    candidate_indexes = [
-        CHILD_AGE_BANDS.index(age_band)
-        for age_band in entry_age_bands
-        if age_band in CHILD_AGE_BANDS
-    ]
-    if not candidate_indexes:
-        return 0, ""
-    target_index = CHILD_AGE_BANDS.index(target_age_band)
-    distance = min(abs(target_index - candidate_index) for candidate_index in candidate_indexes)
-    if distance == 0:
-        return 4, f"age {target_age_band}"
-    if distance == 1:
-        return 2, f"near age {target_age_band}"
-    return 0, ""
-
-
-def content_phrase_matches(phrases: list[str], normalized_query_text: str) -> list[str]:
-    if not normalized_query_text:
-        return []
-    matches: list[str] = []
-    for phrase in phrases:
-        normalized_phrase = normalized_content_phrase(phrase)
-        if normalized_phrase and normalized_phrase in normalized_query_text:
-            matches.append(str(phrase).strip())
-    return unique_texts(matches)
-
-
-def catalog_entry_tokens(entry: dict[str, Any]) -> set[str]:
-    return set(
-        content_tokens(
-            " ".join(
-                [
-                    str(entry.get("title", "")),
-                    str(entry.get("summary", "")),
-                    str(entry.get("prompt", "")),
-                    *[str(tag) for tag in entry.get("goal_tags", [])],
-                    *[str(topic) for topic in entry.get("topics", [])],
-                ]
-            )
-        )
+    return PRODUCT_RUNTIME.content_query_dict(
+        character_preset=current_character_preset(),
+        user_text=user_text,
     )
-
-
-def score_catalog_entry(
-    entry_id: str,
-    entry: dict[str, Any],
-    *,
-    selected_ids: list[str],
-    user_text: str = "",
-) -> dict[str, Any] | None:
-    query = content_query_dict(user_text)
-    score = 0
-    reasons: list[str] = []
-    matched_terms: list[str] = []
-
-    age_score, age_reason = age_band_retrieval_score(
-        str(PRODUCT_STATE.get("child_age_band", "")).strip(),
-        list(entry.get("age_bands") or []),
-    )
-    score += age_score
-    if age_reason:
-        reasons.append(age_reason)
-
-    if entry_id in selected_ids:
-        score += 2
-        reasons.append("selected for this toy")
-
-    entry_tokens = catalog_entry_tokens(entry)
-    entry_groups = semantic_groups_for_tokens(entry_tokens)
-    phrase_candidates = [
-        str(entry.get("title", "")),
-        *[str(tag) for tag in entry.get("goal_tags", [])],
-        *[str(topic) for topic in entry.get("topics", [])],
-    ]
-
-    request_phrase_matches = content_phrase_matches(phrase_candidates, query["request_text"])
-    if request_phrase_matches:
-        score += 4 * len(request_phrase_matches[:2])
-        reasons.append("request: " + ", ".join(request_phrase_matches[:2]))
-        matched_terms.extend(request_phrase_matches[:2])
-
-    profile_phrase_matches = content_phrase_matches(phrase_candidates, query["profile_text"])
-    if profile_phrase_matches:
-        score += 3 * len(profile_phrase_matches[:2])
-        reasons.append("profile: " + ", ".join(profile_phrase_matches[:2]))
-        matched_terms.extend(profile_phrase_matches[:2])
-
-    request_token_matches = sorted(entry_tokens & query["request_tokens"])
-    if request_token_matches:
-        score += 2 * len(request_token_matches[:3])
-        reasons.append("request terms: " + ", ".join(request_token_matches[:3]))
-        matched_terms.extend(request_token_matches[:3])
-
-    profile_token_matches = sorted((entry_tokens & query["profile_tokens"]) - set(request_token_matches))
-    if profile_token_matches:
-        score += len(profile_token_matches[:2])
-        reasons.append("profile terms: " + ", ".join(profile_token_matches[:2]))
-        matched_terms.extend(profile_token_matches[:2])
-
-    request_group_matches = sorted(entry_groups & query["request_groups"])
-    if request_group_matches:
-        score += 3 * len(request_group_matches[:2])
-        reasons.append(
-            "request themes: "
-            + ", ".join(semantic_group_label(group) for group in request_group_matches[:2])
-        )
-
-    profile_group_matches = sorted((entry_groups & query["profile_groups"]) - set(request_group_matches))
-    if profile_group_matches:
-        score += 2 * len(profile_group_matches[:2])
-        reasons.append(
-            "profile themes: "
-            + ", ".join(semantic_group_label(group) for group in profile_group_matches[:2])
-        )
-
-    mode_group_matches = sorted(
-        (entry_groups & query["mode_groups"]) - set(request_group_matches) - set(profile_group_matches)
-    )
-    if mode_group_matches:
-        score += len(mode_group_matches[:2])
-        reasons.append(
-            "character fit: "
-            + ", ".join(semantic_group_label(group) for group in mode_group_matches[:2])
-        )
-
-    if score <= 0:
-        return None
-
-    matched_groups = unique_texts(
-        [semantic_group_label(group) for group in sorted(entry_groups & (query["request_groups"] | query["profile_groups"] | query["mode_groups"]))]
-    )
-    return {
-        "id": entry_id,
-        "title": entry["title"],
-        "summary": entry["summary"],
-        "prompt": entry["prompt"],
-        "score": score,
-        "reasons": unique_texts(reasons)[:4],
-        "matched_terms": unique_texts(matched_terms)[:4],
-        "matched_groups": matched_groups[:3],
-    }
 
 
 def recommend_catalog_entries(
@@ -959,169 +556,50 @@ def recommend_catalog_entries(
     limit: int = 3,
     user_text: str = "",
 ) -> list[dict[str, Any]]:
-    ranked: list[dict[str, Any]] = []
-    for entry_id, entry in catalog.items():
-        scored = score_catalog_entry(
-            entry_id,
-            entry,
-            selected_ids=selected_ids,
-            user_text=user_text,
-        )
-        if scored is not None:
-            ranked.append(scored)
-    ranked.sort(
-        key=lambda item: (
-            -int(item["score"]),
-            -int(item["id"] in selected_ids),
-            item["title"].lower(),
-        ),
-    )
-    return ranked[:limit]
-
-
-def content_prompt_limits(user_text: str = "") -> tuple[int, int]:
-    query = content_query_dict(user_text)
-    request_groups = set(query["request_groups"])
-    story_focus = bool(request_groups & {"story", "bedtime", "calm", "space"}) or (
-        RUNTIME_CONFIG.character_preset in {"storyteller", "bedtime_guide"}
-    )
-    learning_focus = bool(request_groups & {"english", "phonics", "science", "social"}) or (
-        RUNTIME_CONFIG.character_preset in {"language_teacher", "curious_friend"}
-    )
-    if story_focus and not learning_focus:
-        return 0, 2
-    if learning_focus and not story_focus:
-        return 2, 0
-    if RUNTIME_CONFIG.character_preset in {"storyteller", "bedtime_guide"}:
-        return 1, 2
-    if RUNTIME_CONFIG.character_preset in {"language_teacher", "curious_friend"}:
-        return 2, 1
-    return 1, 1
-
-
-def select_diverse_ranked_entries(
-    ranked: list[dict[str, Any]],
-    limit: int,
-) -> list[dict[str, Any]]:
-    if limit <= 0 or not ranked:
-        return []
-    remaining = list(ranked)
-    selected: list[dict[str, Any]] = []
-    covered_terms: set[str] = set()
-    covered_groups: set[str] = set()
-    while remaining and len(selected) < limit:
-        best_index = 0
-        best_adjusted_score = float("-inf")
-        for index, item in enumerate(remaining):
-            term_bonus = len(set(item.get("matched_terms", [])) - covered_terms) * 2
-            group_bonus = len(set(item.get("matched_groups", [])) - covered_groups) * 3
-            adjusted_score = float(item["score"]) + term_bonus + group_bonus
-            if adjusted_score > best_adjusted_score:
-                best_adjusted_score = adjusted_score
-                best_index = index
-        chosen = remaining.pop(best_index)
-        selected.append(chosen)
-        covered_terms.update(chosen.get("matched_terms", []))
-        covered_groups.update(chosen.get("matched_groups", []))
-    return selected
-
-
-def active_catalog_prompt_entries(
-    catalog: ContentCatalog,
-    active_ids: list[str],
-    *,
-    user_text: str = "",
-    limit: int = 1,
-) -> list[dict[str, Any]]:
-    if limit <= 0:
-        return []
-    active_catalog = {
-        entry_id: catalog[entry_id]
-        for entry_id in active_ids
-        if entry_id in catalog
-    }
-    if not active_catalog:
-        return []
-    ranked = recommend_catalog_entries(
-        active_catalog,
-        selected_ids=list(active_catalog),
-        limit=max(limit * 3, limit),
+    return PRODUCT_RUNTIME.recommend_catalog_entries(
+        catalog,
+        selected_ids=selected_ids,
+        character_preset=current_character_preset(),
+        limit=limit,
         user_text=user_text,
     )
-    return select_diverse_ranked_entries(ranked, limit)
 
 
 def runtime_content_context(user_text: str = "") -> dict[str, Any]:
-    learning_limit, story_limit = content_prompt_limits(user_text)
-    return {
-        "strategy": "ranked-local-library",
-        "learning_packs": active_catalog_prompt_entries(
-            LEARNING_PACKS,
-            list(PRODUCT_STATE["active_learning_pack_ids"]),
-            user_text=user_text,
-            limit=learning_limit,
-        ),
-        "story_library": active_catalog_prompt_entries(
-            STORY_LIBRARY,
-            list(PRODUCT_STATE["active_story_ids"]),
-            user_text=user_text,
-            limit=story_limit,
-        ),
-        "learning_limit": learning_limit,
-        "story_limit": story_limit,
-    }
+    return PRODUCT_RUNTIME.runtime_content_context(
+        character_preset=current_character_preset(),
+        user_text=user_text,
+    )
 
 
 def product_recommendations_dict() -> dict[str, Any]:
-    learning_recommendations = recommend_catalog_entries(
-        LEARNING_PACKS,
-        selected_ids=list(PRODUCT_STATE["active_learning_pack_ids"]),
+    return PRODUCT_RUNTIME.recommendations_dict(
+        character_preset=current_character_preset(),
     )
-    story_recommendations = recommend_catalog_entries(
-        STORY_LIBRARY,
-        selected_ids=list(PRODUCT_STATE["active_story_ids"]),
-    )
-    return {
-        "strategy": "ranked-local-library",
-        "learning_packs": learning_recommendations,
-        "learning_pack_ids": [item["id"] for item in learning_recommendations],
-        "story_library": story_recommendations,
-        "story_ids": [item["id"] for item in story_recommendations],
-    }
 
 
-def product_public_dict() -> dict[str, Any]:
-    return {
-        "setup": dict(PRODUCT_STATE),
-        "child_age_bands": CHILD_AGE_BANDS,
-        "safety_modes": SAFETY_MODES,
-        "learning_packs": LEARNING_PACKS,
-        "story_library": STORY_LIBRARY,
-        "recommendations": product_recommendations_dict(),
-        "retrieval": runtime_content_context(),
-        "content_files": {
-            "content_dir": str(CONTENT_DIR),
-            "learning_packs_path": str(LEARNING_PACKS_PATH),
-            "story_library_path": str(STORY_LIBRARY_PATH),
-        },
-        "rag_mode": "ranked-local-library",
-    }
+def product_public_dict(user_text: str = "") -> dict[str, Any]:
+    return PRODUCT_RUNTIME.public_dict(
+        character_preset=current_character_preset(),
+        user_text=user_text,
+    )
 
 
 def apply_product_state(update: dict[str, Any]) -> dict[str, Any]:
-    global PRODUCT_STATE
-    PRODUCT_STATE = normalize_product_state({**PRODUCT_STATE, **update})
-    save_product_state()
-    return product_public_dict()
+    result = PRODUCT_RUNTIME.apply_update(
+        update,
+        character_preset=current_character_preset(),
+    )
+    sync_product_runtime_aliases()
+    return result
 
 
 def reload_product_content() -> dict[str, Any]:
-    global LEARNING_PACKS, STORY_LIBRARY, PRODUCT_STATE
-    LEARNING_PACKS = load_content_catalog(LEARNING_PACKS_PATH, DEFAULT_LEARNING_PACKS)
-    STORY_LIBRARY = load_content_catalog(STORY_LIBRARY_PATH, DEFAULT_STORY_LIBRARY)
-    PRODUCT_STATE = normalize_product_state(PRODUCT_STATE)
-    save_product_state()
-    return product_public_dict()
+    result = PRODUCT_RUNTIME.reload_content(
+        character_preset=current_character_preset(),
+    )
+    sync_product_runtime_aliases()
+    return result
 
 
 def record_turn_activity(session: Session, metrics: dict[str, Any]) -> None:

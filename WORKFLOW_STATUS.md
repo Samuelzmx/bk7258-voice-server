@@ -18,6 +18,7 @@ No firmware flash is required for the final working server-side fix.
 ## Main Working File
 
 - `wss_server.py`
+- `bk7258_product_runtime.py`
 
 ## What Was Fixed
 
@@ -75,9 +76,33 @@ The server was updated to:
   self-echo loops
 - a short processing prompt can be enabled so the chip says `One moment.`
 
+## Significant Checkpoints
+
+### 2026-07-01
+
+- added richer parent dashboard summaries and filters
+- added filtered activity breakdowns and history views in the control panel
+- tightened low-latency defaults for shorter replies and faster turn cutting
+- pushed product-branch checkpoint `34a7570`
+
+### 2026-07-05
+
+- upgraded content selection from simple tag overlap to ranked local retrieval
+- added diversity-aware prompt context so mixed requests can pull complementary story guidance
+- extracted product/content state and retrieval logic into `bk7258_product_runtime.py`
+- added `setup_server.command` and `start_server.command` to reduce Mac tester setup friction
+- pushed product-branch checkpoints `fb90bc9` and the current refactor/setup follow-up
+
 ## How To Run
 
 From the project directory:
+
+```bash
+./setup_server.command
+./start_server.command
+```
+
+Shell fallback:
 
 ```bash
 ./.venv/bin/python3 ./wss_server.py
