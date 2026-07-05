@@ -25,6 +25,7 @@ Current control panel features:
 - show richer parent dashboard summaries for latency, session length, top child, top mode, and top provider
 - filter saved activity by child, provider, character, and search text
 - recommend stories and learning packs based on child age, interests, and parent goals
+- rank active stories and learning packs against the child request instead of always injecting every selected prompt
 - filter content in the panel with search and `recommended only`
 - tighter low-latency defaults: shorter replies, shorter LLM history, and faster server-side VAD turn cutting
 
@@ -107,7 +108,8 @@ The chip speaks an OpenAI Realtime API-like protocol over raw WebSocket:
 - `content/learning_packs.json`
 - `content/story_library.json`
 - use the `Reload Content Files` button in the panel after editing these JSON files
-- the server injects the selected packs and stories into the runtime prompt, which is the current product step before full RAG
+- the server now uses `ranked-local-library` retrieval to choose the most relevant active packs and stories for the current child request
+- this keeps prompt context shorter and more specific than injecting every selected content prompt every turn
 - each content item can now include:
   - `age_bands`
   - `goal_tags`

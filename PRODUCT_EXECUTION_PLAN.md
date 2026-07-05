@@ -49,6 +49,7 @@ The current experimental product layer adds:
 - persistent recent-turn and recent-session history for parents
 - richer parent dashboard summaries and activity filters
 - age-aware content recommendations and parent-side content filtering
+- ranked local retrieval for active story and lesson prompt context
 - latency-focused defaults for shorter replies, shorter LLM context, and faster turn commit
 
 These settings feed directly into the runtime system prompt so the toy can behave more like a real personalized product.
@@ -159,9 +160,9 @@ Ship a version that does not depend on manual local engineering steps.
 1. Keep `main` as the stable working branch.
 2. Move product work to a separate branch such as `product-beta-foundation`.
 3. Keep testing the family setup UI against the live chip workflow.
-4. Add richer content metadata and retrieval beyond simple tag matching.
-5. Start separating product UI concerns from the single-file server implementation.
-6. Move toward a packaged parent app or PWA shell around the current LAN panel.
+4. Start separating product UI concerns from the single-file server implementation.
+5. Move toward a packaged parent app or PWA shell around the current LAN panel.
+6. Add deeper progress memory and family-safe personalization beyond prompt-only retrieval.
 
 ## Definition Of Success
 
